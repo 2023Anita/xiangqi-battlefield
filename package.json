@@ -1,13 +1,14 @@
 {
   "name": "xiangqi-battlefield",
   "version": "1.0.0",
-  "description": "3D 中国象棋战场 — single-file browser game (three.js + PeerJS)",
+  "description": "3D 中国象棋战场 — single-file browser game (three.js + PeerJS/WebRTC, MQTT relay fallback)",
   "private": true,
   "scripts": {
     "build": "node build.js",
     "test": "node test/engine.test.js",
     "test:deep": "node test/engine.test.js --deep",
     "test:browser": "node test/browser.test.js",
+    "test:relay": "node test/relay.test.js",
     "screenshots": "node test/screenshots.js"
   },
   "license": "MIT"

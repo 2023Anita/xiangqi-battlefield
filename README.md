@@ -8,7 +8,7 @@
 
 ## 怎么玩
 
-- **直接双击 `index.html`** 即可离线运行（three.js、PeerJS 等已全部内联，无需联网、无需服务器）。
+- **直接双击 `index.html`** 即可离线运行（three.js、PeerJS、MQTT.js 等已全部内联，单机玩无需联网、无需服务器）。
 - 也可托管在 GitHub Pages：`https://<用户名>.github.io/xiangqi-battlefield/`（只用相对路径，单文件）。
 - 点击己方棋子选中，金色光点为可走位置、红圈为可吃子；再点目标即可走棋。
 - 拖动旋转、滚轮/双指缩放、右键/双指平移；「2D 俯视」切换为传统平面视角。
@@ -21,7 +21,7 @@
 | 类别 | 内容 |
 | --- | --- |
 | 规则 | 完整规则：蹩马腿、塞象眼、象不过河、仕/帅不出九宫、炮隔一子吃、兵过河方可横走、将帅不能照面、不能送将；判定将军、将死（绝杀）、困毙（无子可动判负）。循环裁定（简化亚洲规则）：长将判负、长捉判负，长将对长捉时长将方负；其余循环局面、六十回合（120 步）无吃子、双方无进攻子力判和 |
-| 模式 | 本地双人；人机对战（易/中/难，执红或执黑）；在线联机（WebRTC 点对点） |
+| 模式 | 本地双人；人机对战（易/中/难，执红或执黑）；在线联机（WebRTC 直连，连不上时自动改走 MQTT 中继） |
 | AI | α-β 剪枝 + PVS、迭代加深、置换表、MVV-LVA/杀手/历史启发、静态搜索、将军延伸、空着裁剪；在 Web Worker（Blob 内联）中运行，画面不卡顿 |
 | 动画 | 行军/奔马/车轮滚动；吃子特写：投石机抛射石弹越过炮架砸中目标（碎石、烟尘、镜头震动）、战车冲撞、骑兵飞跃、长枪突刺、战象践踏、仕/帅挥剑；被吃棋子倾倒、碎裂淡出 |
 | 提示 | 将军：将台红光 + 「将军」横幅；绝杀：胜方镜头环绕 + 胜负横幅 |
@@ -36,8 +36,12 @@
 1. 「菜单 → 在线联机 → 创建房间」，选择执红/执黑，得到 6 位房间码和邀请链接（`index.html?room=XXXXXX`），可一键复制。
 2. 好友打开链接，或在「加入房间」输入房间码。
 3. 同步内容：走子、悔棋请求/同意、求和、认输、再来一局（交换先后手）。房主为权威端，只接受合法着法；断线后自动重连，连接建立时房主发送完整局面重新同步；房主刷新页面可凭 `?room=…&host=1` 恢复房间（同一标签页）。
-4. 信令使用 PeerJS 公共服务器，打洞使用 Google / Cloudflare STUN。**没有 TURN 中继**：部分公司/校园网络或对称 NAT 下可能无法直连，此时会提示「网络限制，建议换网络或稍后重试」。
-5. 可选自建信令服务器：在链接后加 `&peerserver=主机:端口/路径`（例如本地测试用 `localhost:9123/xq`）。
+4. **直连 / 中继 自动切换**：
+   - **直连**：WebRTC 点对点（信令用 PeerJS 公共服务器，打洞用 Google / Cloudflare STUN）。
+   - **中继**：公共 MQTT-over-WebSocket 服务器转发（`wss://broker.emqx.io:8084/mqtt`，备用 `broker-cn.emqx.io`、`broker.hivemq.com`），走普通 https/wss 端口，适合屏蔽 UDP 或对称 NAT 的公司/校园/手机网络。
+   - 房主创建房间后同时在两条通道上等待；客人先尝试直连，6 秒内连不上（或 PeerJS 服务器不可达）就自动改用中继，之后整局固定使用这一条通道。顶部状态显示「已连接（直连）」或「已连接（中继）」。PeerJS 服务器不可用时房间照样能创建（只走中继）。
+   - 中继模式同样支持全部功能（走子、悔棋、求和、认输、再来一局、断线重连、裁定同步），心跳每 5 秒一次、20 秒无响应视为对手离开；房间码不存在时提示「房间不存在或房主已离开」。中继消息经公共服务器转发、未加密，只包含棋局数据。
+5. 测试 / 自建用参数：`&relay=only`（跳过直连，只用中继）、`&relay=off`（只用直连）、`&mqtt=ws://主机:端口/mqtt`（换用自己的 MQTT 服务器，会写进邀请链接）、`&peerserver=主机:端口/路径`（自建 PeerJS 信令，例如本地测试用 `localhost:9123/xq`）。
 
 > 建议通过 https（如 GitHub Pages）使用联机；直接双击打开（file://）时，个别浏览器可能拒绝连接公共信令服务器。
 
@@ -62,6 +66,7 @@ node test/engine.test.js      # 规则测试：perft(1..3)=44/1920/79666，加 -
 node test/browser.test.js ai                      # AI Worker、人机悔棋
 node test/browser.test.js online --local-broker   # 两个无头页面经本地 PeerJS 服务器联机（需 npm i peer）
 node test/fallback2d.test.js [--local-broker]     # 禁用 WebGL 的 Chromium：2D 棋盘回退、点击走子、悔棋、提示、存读档、人机、联机、截图
+node test/relay.test.js                           # 中继联机：本地 MQTT 服务器（aedes + ws），relay=only 全流程、PeerJS 不可达/WebRTC 被阻断时自动回退中继
 node test/screenshots.js [start|sketch|capture|2d|dusk|night|close|mate|check|mobile|menu]
 ```
 
@@ -71,9 +76,9 @@ node test/screenshots.js [start|sketch|capture|2d|dusk|night|close|mate|check|mo
 
 - 长将/长捉为简化裁定（不区分「捉」的全部细则，如牵制、假根、一将一闲等特殊情形），与正式比赛规则可能有出入。
 - 计时器只统计双方用时，没有限时判负。
-- 联机无 TURN 中继服务器；公共 PeerJS 服务器偶有不稳定。
+- 中继依赖免费公共 MQTT 服务器（无 SLA），偶有不稳定；直连没有 TURN 服务器。
 - 易级 AI 会随机走出明显的弱着（有意为之）。
 
 ## 许可
 
-本项目代码可自由使用。内置第三方库：three.js r170（MIT，见 `vendor/LICENSE-three.txt`）、PeerJS 1.5.4（MIT，见 `vendor/LICENSE-peerjs.txt`）。
+本项目代码可自由使用。内置第三方库：three.js r170（MIT，见 `vendor/LICENSE-three.txt`）、PeerJS 1.5.4（MIT，见 `vendor/LICENSE-peerjs.txt`）、MQTT.js 5.16.1（MIT，见 `vendor/LICENSE-mqtt.txt`）。

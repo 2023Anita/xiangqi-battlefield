@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createPiece, buildBattlefield, heightAt, updateFlag, SK, MAT, PAL, labelTexture, NAMES } from './models.js';
 import { Sfx } from './audio.js';
-import { PeerTransport, newRoomCode, normalizeRoomCode, errorText } from './net.js';
+import { HybridTransport, newRoomCode, normalizeRoomCode, errorText } from './net.js';
 import { createBoard2D } from './board2d.js';
 
 const XQ = window.XQ, AIlib = window.XQAI;
@@ -440,6 +440,7 @@ async function playMove(m, source) {
   if (source === 'local' && game.mode === 'online') game.net.sendMove(m, ply);
   const note = game.pos.notation(m), mover = game.pos.side;
   game.pos.makeMove(m); game.notes.push({ txt: note, side: mover });
+  if (source === 'net' && game.netRole === 'host') netSync(); // confirm with full state: heals a resync that crossed this move in flight
   game.busy = true; refreshHUD(); clearSelection(); hideHint();
   try { await animateMove(m); } finally { game.busy = false; }
   updateLastMove();
@@ -665,14 +666,18 @@ function peerServerOptions() {
   const secure = m[1] ? /s$/.test(m[1]) : !/^(localhost|127\.|192\.168\.|10\.)/.test(m[2]);
   return { host: m[2], port: m[3] ? +m[3] : secure ? 443 : 80, path: m[4] || '/', secure };
 }
-function shareSuffix() { return params.get('peerserver') ? '&peerserver=' + encodeURIComponent(params.get('peerserver')) : ''; }
+// relay (MQTT over WebSocket) fallback: ?relay=only (skip WebRTC) | ?relay=off (WebRTC only); ?mqtt=ws://host:port[,…] overrides the public brokers
+function relayBrokers() { const v = params.get('mqtt'); return v ? v.split(',').map((x) => x.trim()).filter(Boolean) : undefined; }
+function relayMode() { const v = params.get('relay'); return v === 'only' || v === 'off' ? v : 'auto'; }
+function localSuffix() { let s = shareSuffix(); for (const k of ['relay', 'renderer']) if (params.get(k)) s += '&' + k + '=' + encodeURIComponent(params.get(k)); return s; } // kept in our own URL (reload), not in invites
+function shareSuffix() { let s = ''; for (const k of ['peerserver', 'mqtt']) if (params.get(k)) s += '&' + k + '=' + encodeURIComponent(params.get(k)); return s; }
 function hostKey(code) { return 'xqbf-host-' + code; }
 function saveHost() { if (game.netRole !== 'host') return; try { sessionStorage.setItem(hostKey(game.room), JSON.stringify({ pos: game.pos.serialize(), hostSide: game.hostSide, result: game.result })); } catch (e) { } }
 function netState() { return { t: 'sync', pos: game.pos.serialize(), hostSide: game.hostSide, result: game.result }; }
 function netSync() { if (game.net && game.netRole === 'host') game.net.send(netState()); }
 function netReject() { if (game.netRole === 'host') netSync(); else if (game.net) game.net.send({ t: 'needSync' }); }
 function setNetStatus(state, info) {
-  const el = $('#netStatus'); const map = { connecting: ['连接中…', 'wait'], waiting: ['等待对手加入…', 'wait'], connected: ['已连接', 'ok'], reconnecting: ['连接中断，重新连接中…', 'wait'], 'opponent-left': ['对手已离开，等待重连…', 'bad'], error: [info && info.text || '连接失败', 'bad'], closed: ['已断开', 'bad'] };
+  const el = $('#netStatus'); const map = { connecting: ['连接中…', 'wait'], waiting: ['等待对手加入…', 'wait'], connected: [info && info.mode === 'relay' ? '已连接（中继）' : info && info.mode === 'direct' ? '已连接（直连）' : '已连接', 'ok'], reconnecting: ['连接中断，重新连接中…', 'wait'], 'opponent-left': ['对手已离开，等待重连…', 'bad'], error: [info && info.text || '连接失败', 'bad'], closed: ['已断开', 'bad'] };
   const [txt, cls] = map[state] || [state, 'wait']; el.textContent = txt; el.className = 'net ' + cls; el.style.display = game.mode === 'online' ? '' : 'none';
   const os = $('#onlineStatus'); if (os) { os.textContent = txt; os.className = 'ostatus ' + cls; }
   refreshHUD();
@@ -681,7 +686,7 @@ function startOnline(role, code, hostSide) {
   if (game.net) { game.net.close(); game.net = null; }
   cancelAI(); game.mode = 'online'; game.netRole = role; game.room = code;
   if (role === 'host') { game.hostSide = hostSide; game.mySide = hostSide; }
-  const tr = new PeerTransport({ role, code, peerOptions: peerServerOptions() }); game.net = tr;
+  const tr = new HybridTransport({ role, code, peerOptions: peerServerOptions(), relayBrokers: relayBrokers(), relayMode: relayMode(), resumed: !!game.netResumed }); game.net = tr;
   tr.onStatus((s, info) => {
     setNetStatus(s, info);
     if (s === 'connected') { $('#onlineDlg').classList.remove('show'); closeMenu(); toast(role === 'host' ? '对手已加入！' : '已加入房间'); sfx.play('notify'); }
@@ -753,7 +758,7 @@ function createRoom(hostSide, code) {
   code = code || newRoomCode(); game.netResumed = false;
   game.mode = 'online'; game.hostSide = hostSide; game.mySide = hostSide; game.netRole = 'host'; game.room = code;
   newGame(); startOnline('host', code, hostSide); saveHost();
-  history.replaceState(null, '', '?room=' + code + '&host=1' + shareSuffix());
+  history.replaceState(null, '', '?room=' + code + '&host=1' + localSuffix());
   $('#roomCode').textContent = code; $('#roomLink').value = shareLink(code); $('#onlineErr').textContent = '';
   $('#onlineDlg').classList.add('show');
 }
@@ -761,7 +766,7 @@ function joinRoom(code) {
   code = normalizeRoomCode(code); if (code.length < 4) { $('#joinErr').textContent = '请输入正确的房间码'; return; }
   game.mode = 'online'; game.netRole = 'guest'; game.room = code; game.mySide = BLACK;
   newGame(); startOnline('guest', code);
-  history.replaceState(null, '', '?room=' + code + shareSuffix());
+  history.replaceState(null, '', '?room=' + code + localSuffix());
   $('#roomCode').textContent = code; $('#roomLink').value = shareLink(code); $('#onlineErr').textContent = ''; $('#onlineDlg').classList.add('show'); $('#onlineDlg').classList.add('guest');
 }
 function leaveOnline() { if (game.net) { game.net.close(); game.net = null; } game.netRole = null; game.room = null; $('#netStatus').style.display = 'none'; history.replaceState(null, '', location.pathname); }
@@ -867,7 +872,10 @@ if (!restored) {
   if (!restored) newGame();
   if (!params.has('nomenu')) openMenu('local');
 }
-setNetStatus(game.net ? game.net.state || 'connecting' : 'closed');
+setNetStatus(game.net ? game.net.state || 'connecting' : 'closed', game.net ? game.net._lastInfo : null);
+// leave cleanly (relay: bye + clear retained presence) so the other side notices at once; bfcache restores reload
+addEventListener('pagehide', () => { if (game.net) try { game.net.close(); } catch (e) { } });
+addEventListener('pageshow', (e) => { if (e.persisted && game.mode === 'online') location.reload(); });
 frame();
 $('#loading').classList.add('done');
 if (MODE2D) setTimeout(() => toast('当前设备不支持 3D，已切换到 2D 棋盘', 4500), 300);

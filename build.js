@@ -26,6 +26,7 @@ window.addEventListener('error',function(e){var l=document.getElementById('loadi
 
 let scripts = '';
 scripts += `<script>/* PeerJS 1.5.4 (MIT) */\n${esc(read(path.join(V, 'peerjs.min.js')))}\n</script>\n`;
+scripts += `<script>/* MQTT.js 5.16.1 (MIT) — relay fallback */\n${esc(read(path.join(V, 'mqtt.min.js')))}\n</script>\n`;
 scripts += `<script id="xq-engine-src">\n${esc(read(path.join(S, 'engine.js')))}\n</script>\n`;
 scripts += `<script id="xq-ai-src">\n${esc(read(path.join(S, 'ai.js')))}\n</script>\n`;
 for (const [k, v] of Object.entries(mods)) scripts += `<script type="text/plain" data-mod="${k}">\n${esc(v)}\n</script>\n`;

@@ -62,8 +62,9 @@ let fail = 0; const ok = (c, n) => { console.log((c ? 'PASS ' : 'FAIL ') + n); i
     await host.waitForFunction(() => document.querySelector('#netStatus').textContent.includes('等待'), null, { timeout: 20000 });
     const code = await host.evaluate(() => __xq.game.room);
     const guest = await open('?room=' + code + PS);
-    await guest.waitForFunction(() => document.querySelector('#netStatus').textContent === '已连接', null, { timeout: 30000 });
+    await guest.waitForFunction(() => document.querySelector('#netStatus').textContent.startsWith('已连接'), null, { timeout: 30000 });
     await host.waitForFunction(() => __xq.game.net && __xq.game.net.connected, null, { timeout: 20000 });
+    ok(/^已连接（直连）$/.test(await guest.textContent('#netStatus')), 'WebRTC 可用时状态: ' + (await guest.textContent('#netStatus')));
     await host.evaluate(() => __xq.play('h2e2')); await guest.waitForFunction(() => __xq.game.pos.hist.length === 1, null, { timeout: 15000 });
     ok(await guest.evaluate(() => __xq.mode2d && __xq.view.side === -1 && __xq.board2d.sprites.length === 32), '2D 在线联机: 房主走子同步到客人（客人视角翻转）');
     await host.evaluate(() => __xq.load('9/3k5/R8/9/9/9/9/9/9/5K3 w - - 0 1 moves a7a8 d8d9 a8a9 d9d8 a9a8 d8d9 a8a9'));

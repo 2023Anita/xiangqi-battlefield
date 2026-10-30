@@ -15,12 +15,14 @@ src/
   board2d.js             ES module: 2D Canvas board (fallback renderer when WebGL is unavailable or ?renderer=2d)
   models.js              ES module: toon/outline/sketch materials, Kit (primitive baking), unit builders, battlefield
   audio.js               ES module: procedural WebAudio Sfx
-  net.js                 ES module: GameTransport interface + PeerTransport (PeerJS/WebRTC)
-vendor/                  three.module.min.js r170, addons (OrbitControls, EffectComposer, UnrealBloomPass, OutputPass, BufferGeometryUtils + deps), peerjs.min.js 1.5.4
+  net.js                 ES module: GameTransport interface; PeerTransport (PeerJS/WebRTC), RelayTransport (MQTT over WebSocket), HybridTransport (direct→relay fallback, used by main.js)
+vendor/                  three.module.min.js r170, addons (OrbitControls, EffectComposer, UnrealBloomPass, OutputPass, BufferGeometryUtils + deps), peerjs.min.js 1.5.4, mqtt.min.js 5.16.1 (MQTT.js browser build, global `mqtt`)
 test/
   engine.test.js         node: perft + rule cases + notation + save/load + AI sanity
   browser.test.js        playwright: AI worker; two-page online play (use --local-broker in sandboxes without internet WebSocket)
   fallback2d.test.js     playwright with WebGL disabled: 2D fallback, real clicks, undo/hint/save-load, AI, online (--local-broker), screenshots fallback-2d*.png
+  relay.test.js          playwright 2D pages over a LOCAL MQTT broker: relay=only full flow, PeerJS unreachable → relay, WebRTC blocked → relay after 6 s, screenshot relay-mobile.png
+  mqtt-broker.js         aedes + ws MQTT-over-WebSocket broker for tests (needs aedes@0.51, ws in ../.pw/node_modules)
   screenshots.js         playwright + SwiftShader screenshots into screenshots/
   run-screens.sh         sandbox helper (expects ../.pw/node_modules and ../.pw/browsers)
 screenshots/             reference renders
@@ -52,10 +54,15 @@ ES modules are embedded as `<script type="text/plain" data-mod="three" | "three/
 
 ## Online protocol (host authoritative)
 
-Messages over `GameTransport.send`: `move{m,ply}`, `sync{pos,hostSide,result}`, `hello`, `needSync`, `undoReq/undoAns{ok}`, `drawOffer/drawAns{ok}`, `resign`, `rematchReq/rematchAns{ok}` (rematch swaps colours). The host validates every incoming move (`ply` must match, side must be the guest's, move must be legal) and replies with a full `sync` on mismatch and on every (re)connection. Peer id = `xqbf-<code lowercase>`. Optional broker override `?peerserver=host:port/path`.
+Messages over `GameTransport.send`: `move{m,ply}`, `sync{pos,hostSide,result}`, `hello`, `needSync`, `undoReq/undoAns{ok}`, `drawOffer/drawAns{ok}`, `resign`, `rematchReq/rematchAns{ok}` (rematch swaps colours). The host validates every incoming move (`ply` must match, side must be the guest's, move must be legal) and replies with a full `sync` on mismatch and on every (re)connection. Peer id = `xqbf-<code lowercase>`. Optional broker override `?peerserver=host:port/path`. After applying a guest move the host immediately sends a full `sync` (heals a resync that crossed the move in flight).
+
+### Transports (src/net.js)
+- `HybridTransport` is what `main.js` creates. Host: starts PeerTransport AND RelayTransport; whichever sub-transport a guest session opens on (`_open`) becomes `active` (a later session on the other one takes over). PeerJS errors never fail the host while the relay is up; `unavailable-id` on a fresh room → error (main picks a new code); on a resumed room → retry PeerJS later. Guest: PeerTransport first; not `connected` within 6 s or any PeerJS error → drop it and use the relay for the rest of the session (one exception: relay brokers unreachable after a *timeout* fallback → one unhurried WebRTC retry). Status info carries `mode: 'direct'|'relay'` → pill 已连接（直连）/已连接（中继）.
+- `RelayTransport`: topics `xqbf/v1/<CODE>/host|guest` (each role publishes on its own, subscribes to the other) + retained `…/presence` `{h: hostInstanceId}` (host only; cleared on close and by last-will). Connects to ALL brokers in the list (public brokers are not bridged) and listens on all; sends on the broker it last heard the peer on. Envelope `{k: hello|ack|nack|ping|msg|bye, f: senderId, to, q: seq, d}`, QoS 1, dedupe by per-sender seq; game messages sent while offline are queued and flushed before the re-hello. Heartbeat 5 s, peer lost after 20 s; guest re-hellos on broker reconnect / host presence change; host re-links any guest that talks to it while unlinked. No presence and no ack 7 s after the first broker connect → `peer-unavailable` (房间不存在或房主已离开).
+- URL params: `?relay=only|off`, `?mqtt=ws://host:port/mqtt[,…]` (overrides the public broker list; carried in invite links like `peerserver`). `relay`/`renderer` are kept in the player's own URL (reload) but not in invites.
 
 ## Testing checklist before shipping
 
 1. `node build.js && node test/engine.test.js` (all PASS)
-2. `node test/browser.test.js ai`, `node test/browser.test.js online --local-broker`, and `node test/fallback2d.test.js --local-broker` (WebGL disabled)
+2. `node test/browser.test.js ai`, `node test/browser.test.js online --local-broker` (forces `relay=off`; on slow software-GL sandboxes add `XQ_Q='&renderer=2d'`, two 3D pages take >100 s to load), `node test/fallback2d.test.js --local-broker` (WebGL disabled) and `node test/relay.test.js` (local MQTT broker)
 3. Regenerate screenshots and look at them (readability of medallions, clipping, outlines, HUD overflow at 1280px and 390px widths).
