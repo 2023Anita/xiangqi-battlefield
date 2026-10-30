@@ -190,12 +190,83 @@
     repetitionCount() { let n = 0; for (let i = this.hist.length - 1; i >= 0; i--) { const e = this.hist[i]; if (e.hl === this.hl && e.hh === this.hh) n++; } return n; }
     pliesSinceCapture() { let n = 0; for (let i = this.hist.length - 1; i >= 0; i--) { if (this.hist[i].cap) break; n++; } return n; }
 
+    // index (into hist) of the k-th most recent earlier occurrence of the current position, or -1
+    repetitionIndex(k) { k = k || 1; for (let i = this.hist.length - 1; i >= 0; i--) { const e = this.hist[i]; if (e.hl === this.hl && e.hh === this.hh && --k === 0) return i; } return -1; }
+
+    // ---- 长将 / 长捉 (perpetual check / chase) ----
+    // legal captures of `side`: Map attackerSq -> [targetSq]
+    _captureMap(side) {
+      const ps = this.pseudoMoves(side, true), map = new Map();
+      for (const m of ps) {
+        this.makeMove(m); const ok = !this.inCheck(side); this.unmakeMove();
+        if (!ok) continue;
+        const a = mvFrom(m); let l = map.get(a); if (!l) map.set(a, (l = [])); l.push(mvTo(m));
+      }
+      return map;
+    }
+    // Does attacker on `a` "chase" (捉) the piece on `t`? Simplified Asian-rules test (current board).
+    _isChaseTarget(a, t) {
+      const b = this.board, tp = b[t], T = Math.abs(tp), ts = Math.sign(tp), At = Math.abs(b[a]);
+      if (T === K || At === K) return false;              // checks are judged separately; 将帅捉子不算
+      if (T === P && ownHalf(rowOf(t), ts)) return false;  // 未过河兵卒不算
+      if (At === T) return false;                          // 同兵种互捉 = 兑子
+      if (T === R && (At === N || At === C || At === P)) return true; // 马/炮/兵捉车
+      this.makeMove(a * 90 + t); const prot = this.attacked(t, ts); this.unmakeMove();
+      return !prot;                                        // 捉无根子
+    }
+    // Info for move m from the current position: {chk: gives check, chase: [target squares newly chased]}
+    moveInfo(m) {
+      const side = this.side, f = mvFrom(m), t = mvTo(m);
+      const before = this._captureMap(side);
+      this.makeMove(m);
+      const chk = this.inCheck(-side), after = this._captureMap(side), chase = [];
+      for (const [a, ts] of after) {
+        const prev = before.get(a === t ? f : a) || [];
+        for (const x of ts) if (prev.indexOf(x) < 0 && this._isChaseTarget(a, x)) chase.push(x);
+      }
+      this.unmakeMove();
+      return { chk, chase };
+    }
+    // Adjudicate the repetition cycle hist[start..end). Restores the position exactly.
+    // Returns {loser: RED|BLACK|0, kind: 'check'|'chase'|null}
+    cycleVerdict(start) {
+      const n = this.hist.length; if (start < 0 || start >= n) return { loser: 0, kind: null };
+      for (let i = start; i < n; i++) if (this.hist[i].m < 0) return { loser: 0, kind: null };
+      const moves = []; while (this.hist.length > start) moves.push(this.unmakeMove().m); moves.reverse();
+      const s0 = this.side, idx = (side) => (side === RED ? 0 : 1);
+      // pass 1: checks (cheap)
+      const allChk = [true, true], chk = [];
+      for (const m of moves) { const sd = this.side; this.makeMove(m); const c = this.inCheck(this.side); chk.push(c); if (!c) allChk[idx(sd)] = false; }
+      let verdict = null;
+      if (allChk[0] && !allChk[1]) verdict = { loser: RED, kind: 'check' };
+      else if (allChk[1] && !allChk[0]) verdict = { loser: BLACK, kind: 'check' };
+      else if (allChk[0] && allChk[1]) verdict = { loser: 0, kind: null };
+      if (!verdict) { // pass 2: chases (一将一捉 also counts as 长捉)
+        for (let i = 0; i < moves.length; i++) this.unmakeMove();
+        const viol = [true, true];
+        for (let i = 0; i < moves.length; i++) {
+          const sd = this.side;
+          if (viol[idx(sd)] && !chk[i]) { const inf = this.moveInfo(moves[i]); if (!inf.chase.length) viol[idx(sd)] = false; }
+          this.makeMove(moves[i]);
+        }
+        if (viol[0] && !viol[1]) verdict = { loser: RED, kind: 'chase' };
+        else if (viol[1] && !viol[0]) verdict = { loser: BLACK, kind: 'chase' };
+        else verdict = { loser: 0, kind: null };
+      }
+      void s0;
+      return verdict;
+    }
+
     // status of the side to move
     status() {
       const moves = this.legalMoves();
       const check = this.inCheck(this.side);
       if (!moves.length) return { over: true, result: check ? 'checkmate' : 'stalemate', winner: -this.side, check };
-      if (this.repetitionCount() >= 2) return { over: true, result: 'repetition', winner: 0, check };
+      if (this.repetitionCount() >= 2) { // 3rd occurrence: judge the moves since the previous-but-one occurrence
+        const v = this.cycleVerdict(this.repetitionIndex(2));
+        if (v.loser) return { over: true, result: v.kind === 'check' ? 'perpetual_check' : 'perpetual_chase', winner: -v.loser, loser: v.loser, check };
+        return { over: true, result: 'repetition', winner: 0, check };
+      }
       if (this.pliesSinceCapture() >= 120) return { over: true, result: 'nocapture', winner: 0, check };
       if (!this._hasAttackers()) return { over: true, result: 'material', winner: 0, check };
       return { over: false, check, moves };
@@ -270,7 +341,17 @@
     return n;
   }
 
-  const XQ = { Position, perft, K, A, B, N, R, C, P, RED, BLACK, START_FEN, NAMES_RED, NAMES_BLACK, mv, mvFrom, mvTo, rowOf, colOf, ZL, ZH };
+  const RESULT_TEXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '循环局面，和棋', nocapture: '六十回合无吃子，和棋', material: '双方无进攻子力，和棋', resign: '认输', draw: '议和', timeout: '超时' };
+  // Chinese reason line for a status() / game result object
+  function resultText(st) {
+    if (!st) return '';
+    const sideCN = (s) => (s > 0 ? '红方' : '黑方');
+    if (st.result === 'perpetual_check') return sideCN(st.loser || -st.winner) + '长将，判负';
+    if (st.result === 'perpetual_chase') return sideCN(st.loser || -st.winner) + '长捉，判负';
+    return RESULT_TEXT[st.result] || '';
+  }
+
+  const XQ = { Position, perft, resultText, K, A, B, N, R, C, P, RED, BLACK, START_FEN, NAMES_RED, NAMES_BLACK, mv, mvFrom, mvTo, rowOf, colOf, ZL, ZH };
   root.XQ = XQ;
   if (typeof module !== 'undefined' && module.exports) module.exports = XQ;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

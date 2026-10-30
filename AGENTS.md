@@ -12,6 +12,7 @@ src/
   engine.js              rules engine (classic script, UMD: window.XQ / module.exports). No DOM.
   ai.js                  search (window.XQAI / module.exports); also self-registers as Worker onmessage
   main.js                ES module: renderer, camera, tweens, FX, piece animation, game controller, HUD, online protocol
+  board2d.js             ES module: 2D Canvas board (fallback renderer when WebGL is unavailable or ?renderer=2d)
   models.js              ES module: toon/outline/sketch materials, Kit (primitive baking), unit builders, battlefield
   audio.js               ES module: procedural WebAudio Sfx
   net.js                 ES module: GameTransport interface + PeerTransport (PeerJS/WebRTC)
@@ -19,6 +20,7 @@ vendor/                  three.module.min.js r170, addons (OrbitControls, Effect
 test/
   engine.test.js         node: perft + rule cases + notation + save/load + AI sanity
   browser.test.js        playwright: AI worker; two-page online play (use --local-broker in sandboxes without internet WebSocket)
+  fallback2d.test.js     playwright with WebGL disabled: 2D fallback, real clicks, undo/hint/save-load, AI, online (--local-broker), screenshots fallback-2d*.png
   screenshots.js         playwright + SwiftShader screenshots into screenshots/
   run-screens.sh         sandbox helper (expects ../.pw/node_modules and ../.pw/browsers)
 screenshots/             reference renders
@@ -33,10 +35,15 @@ ES modules are embedded as `<script type="text/plain" data-mod="three" | "three/
 - Board `Int8Array(90)`, `sq = r*9 + c`; `r=0` Black back rank (top), `r=9` Red back rank. World: `x = c-4`, `z = r-4.5` (Red near the default camera, +Z).
 - Pieces `K1 A2 B3 N4 R5 C6 P7`, Red positive / Black negative. Move int `from*90 + to`.
 - `Position.serialize()` = `<startFEN> moves <iccs…>`; `Position.load()` accepts plain FEN too. ICCS: file `a–i` = c, rank digit `9-r`.
-- `status()` treats stalemate (困毙) as a loss for the side to move; repetition / 120 plies without capture / no attackers = draw.
+- `status()` treats stalemate (困毙) as a loss for the side to move; 120 plies without capture (`nocapture`) / no attackers = draw.
+- Repetition (3rd occurrence of position+side) is adjudicated by `cycleVerdict(start)` over the moves since the previous-but-one occurrence (simplified Asian rules): a side that checked on every move while the other did not → `perpetual_check` (loses); else a side whose every move was a chase or check (一将一捉 counts) while the other's was not → `perpetual_chase` (loses); otherwise `repetition` draw. Result objects carry `winner` and `loser`; `XQ.resultText(st)` gives the Chinese reason (红方长将，判负 / 黑方长捉，判负 / 循环局面，和棋 / 六十回合无吃子，和棋).
+- Chase (`moveInfo(m).chase`): after the move, any piece of the mover (moved or discovered) newly has a legal capture of an enemy piece that is not the general, not an uncrossed pawn, not attacked by a king, not the same type as the attacker (兑子), and is either unprotected or a 车 attacked by 马/炮/兵. Computed lazily (no per-ply bookkeeping in `makeMove`, so perft speed is unchanged); `cycleVerdict` unmakes/remakes the cycle in place and restores the position exactly. Undo = `unmakeMove`, nothing else to restore.
+- AI: a repetition inside the search (2-fold within 30 plies) is scored with `cycleVerdict`: ±`PERP` (6000, below mate scores) when one side would be the perpetual checker/chaser, else 0.
 - Perft must stay 44 / 1920 / 79666 / 3290240.
 
 ## Rendering conventions
+
+- Renderer choice happens at the top of `main.js`: `?renderer=2d`, no WebGL2 context, or a throwing `WebGLRenderer` → `MODE2D`. In 2D mode the original canvas is replaced by a fresh one, `board2d` draws everything from `game` state each frame, `setupPieces/syncPieces/animateMove/onResize/simStep/frame` delegate to it, 3D-only buttons (`.only3d`: 2D 俯视, 光照, 草图模式, 字牌) are hidden, and a toast says 当前设备不支持 3D，已切换到 2D 棋盘. The THREE scene objects (markers, FX) are still constructed but never rendered; the battlefield is skipped. Keep new 3D-only code behind `MODE2D` checks and new game-state features renderer-agnostic (read `game.*`, not meshes).
 
 - All unit geometry comes from primitives via `Kit` (vertex colours + per-primitive inverted-hull outline). Each piece has an articulated rig (`unit`, shown only while animating) and a merged static copy (`stat`, 2 draw calls) — call `piece.articulate(true/false)`.
 - Forward for unrotated units is −Z; Black units are rotated π in `holder`. The base disc/medallion lives in `disc` and is rotated to face the viewer side.
@@ -50,5 +57,5 @@ Messages over `GameTransport.send`: `move{m,ply}`, `sync{pos,hostSide,result}`, 
 ## Testing checklist before shipping
 
 1. `node build.js && node test/engine.test.js` (all PASS)
-2. `node test/browser.test.js ai` and `node test/browser.test.js online --local-broker`
+2. `node test/browser.test.js ai`, `node test/browser.test.js online --local-broker`, and `node test/fallback2d.test.js --local-broker` (WebGL disabled)
 3. Regenerate screenshots and look at them (readability of medallions, clipping, outlines, HUD overflow at 1280px and 390px widths).

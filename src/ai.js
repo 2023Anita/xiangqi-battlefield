@@ -5,7 +5,7 @@
   'use strict';
   const XQ = root.XQ || (typeof require === 'function' ? require('./engine.js') : null);
   const { K, A, B, N, R, C, P, RED } = XQ;
-  const MATE = 30000, WIN = MATE - 200;
+  const MATE = 30000, WIN = MATE - 200, PERP = 6000; // PERP: 长将/长捉 判负 score (a loss, but below mate scores)
   const VAL = [0, 0, 120, 120, 270, 600, 285, 30];
 
   // Piece-square tables from Red's perspective, indexed by sq (r=0 top/enemy side, r=9 own back rank)
@@ -58,8 +58,15 @@
 
     function timeUp() { if ((++nodes & 2047) === 0 && Date.now() - t0 > timeLimit) stop = true; return stop; }
 
-    function isRepeat() { // repetition within search path or game history -> draw-ish
-      const n = pos.hist.length; for (let i = n - 2; i >= 0 && i >= n - 30; i -= 2) { const e = pos.hist[i]; if (e.hl === pos.hl && e.hh === pos.hh) return true; } return false;
+    // repetition within the search path or game history: index of the earlier occurrence, or -1
+    function repeatIndex() {
+      const n = pos.hist.length; for (let i = n - 2; i >= 0 && i >= n - 30; i -= 2) { const e = pos.hist[i]; if (e.hl === pos.hl && e.hh === pos.hh) return i; } return -1;
+    }
+    // score of a repetition for the side to move: perpetual checker / chaser loses (Asian rules), otherwise draw
+    function repetitionScore(i) {
+      const v = pos.cycleVerdict(i);
+      if (!v.loser) return 0;
+      return v.loser === pos.side ? -PERP : PERP;
     }
 
     function order(moves, ttm, ply) {
@@ -97,7 +104,7 @@
     }
 
     function negamax(depth, alpha, beta, ply, allowNull) {
-      if (ply > 0 && isRepeat()) return 0;
+      if (ply > 0) { const ri = repeatIndex(); if (ri >= 0) return repetitionScore(ri); }
       const side = pos.side, check = pos.inCheck(side);
       if (check) depth++; // check extension
       if (depth <= 0) return quiesce(alpha, beta, ply);
@@ -180,7 +187,7 @@
   }
 
   const LEVELS = { easy: { depth: 2, time: 400, noise: 80 }, medium: { depth: 5, time: 900, noise: 12 }, hard: { depth: 14, time: 2500, noise: 0 } };
-  const AI = { search, evaluate, LEVELS };
+  const AI = { search, evaluate, LEVELS, PERP };
   root.XQAI = AI;
   if (typeof module !== 'undefined' && module.exports) module.exports = AI;
 

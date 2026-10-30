@@ -16,7 +16,7 @@ function addAddon(rel) {
   mods[key] = src;
 }
 ['controls/OrbitControls.js', 'postprocessing/EffectComposer.js', 'postprocessing/RenderPass.js', 'postprocessing/UnrealBloomPass.js', 'postprocessing/OutputPass.js', 'utils/BufferGeometryUtils.js'].forEach(addAddon);
-for (const f of ['main.js', 'models.js', 'audio.js', 'net.js']) {
+for (const f of ['main.js', 'models.js', 'audio.js', 'net.js', 'board2d.js']) {
   mods['app/' + f] = read(path.join(S, f)).replace(/from\s+['"]\.\/([^'"]+)['"]/g, (m, s) => `from 'app/${s}'`);
 }
 const bootstrap = `(function(){var map={imports:{}};document.querySelectorAll('script[data-mod]').forEach(function(s){map.imports[s.dataset.mod]=URL.createObjectURL(new Blob([s.textContent],{type:'text/javascript'}));});

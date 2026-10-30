@@ -77,6 +77,46 @@ if (process.argv.includes('--deep')) { const t = Date.now(); const n = perft(new
   const s3 = sm.status();
   ok(s3.over && s3.result === 'stalemate' && s3.winner === 1, '困毙检测（无子可动判负） got ' + JSON.stringify({ r: s3.result, c: s3.check }));
 }
+// 长将 / 长捉 / 循环 / 自然限着 (simplified Asian rules)
+{
+  const rep = (a, n) => Array(n).fill(a).flat();
+  const play = (fen, ms) => { const p = new Position(fen); for (const a of ms) { const m = M(a); if (!p.isLegal(m)) return { p, err: 'illegal ' + a }; p.makeMove(m); const st = p.status(); if (st.over) return { p, st }; } return { p, st: p.status() }; };
+  // 车长将: red rook a7→a8, black king d8↔d9, red rook a8↔a9 checking every move
+  const PC = '9/3k5/R8/9/9/9/9/9/9/5K3 w - - 0 1', pcMoves = ['a7a8', ...rep(['d8d9', 'a8a9', 'd9d8', 'a9a8'], 3)];
+  let r = play(PC, pcMoves);
+  ok(r.st && r.st.result === 'perpetual_check' && r.st.winner === -1 && r.p.hist.length === 9 && XQ.resultText(r.st) === '红方长将，判负', '长将: 车反复将军第三次重复 → 红方长将判负 (' + (r.st && XQ.resultText(r.st)) + ')');
+  // 马长捉无根车: red horse d2↔e4 attacks the unprotected black rook f6/f3 each move
+  r = play('5k3/9/9/5r3/9/9/9/3N5/9/3K5 w - - 0 1', rep(['d2e4', 'f6f3', 'e4d2', 'f3f6'], 3));
+  ok(r.st && r.st.result === 'perpetual_chase' && r.st.winner === -1 && XQ.resultText(r.st) === '红方长捉，判负', '长捉: 马反复捉无根车 → 红方长捉判负 (' + (r.st && XQ.resultText(r.st)) + ')');
+  // mutual idle repetition → draw
+  r = play('5k2r/9/9/9/9/9/9/9/9/R3K4 w - - 0 1', rep(['a0a1', 'i9i8', 'a1a0', 'i8i9'], 3));
+  ok(r.st && r.st.result === 'repetition' && r.st.winner === 0 && r.p.hist.length === 8 && XQ.resultText(r.st) === '循环局面，和棋', '循环: 双方闲着重复 → 和棋');
+  // red perpetually checks, black king steps uncover horse attacks on unprotected cannons (black perpetually chases) → checker loses
+  const CC = '3CC4/2nk1n3/9/9/9/4R4/9/9/9/5K3 w - - 0 1';
+  { const q = new Position(CC); const i1 = q.moveInfo(M('e4d4')); q.makeMove(M('e4d4')); const i2 = q.moveInfo(M('d8e8')); ok(i1.chk && i2.chase.length === 1 && !i2.chk, '捉子检测: 将军着 / 闪出马捉无根炮'); }
+  r = play(CC, rep(['e4d4', 'd8e8', 'd4e4', 'e8d8'], 3));
+  ok(r.st && r.st.result === 'perpetual_check' && r.st.winner === -1, '长将对长捉: 长将方（红）判负');
+  // undo after adjudication restores a live game; replaying re-adjudicates
+  { const p = r.p; p.unmakeMove(); const s1 = p.status(); ok(!s1.over && p.repetitionCount() === 1, '判负后悔棋: 局面恢复，对局继续');
+    p.makeMove(M('e8d8')); const s2 = p.status(); ok(s2.over && s2.result === 'perpetual_check', '悔棋后重走: 再次判负');
+    const q = Position.load(p.serialize()); ok(q.status().result === 'perpetual_check', '读档后判定一致'); }
+  // AI must not play the move that completes its own perpetual check (it is down material, so a plain draw would tempt it)
+  { const p = new Position('9/3k5/R8/9/9/7rn/9/9/9/5K3 w - - 0 1'); for (const a of ['a7a8', ...rep(['d8d9', 'a8a9', 'd9d8', 'a9a8'], 1), 'd8d9', 'a8a9', 'd9d8']) p.makeMove(M(a));
+    const res = AI.search(p, { depth: 5, time: 2000 }); const q = p.clone(); q.makeMove(res.move); const st = q.status();
+    ok(st.result !== 'perpetual_check' && Position.iccs(res.move) !== 'a9a8', 'AI: 不走成长将判负 (chose ' + Position.iccs(res.move) + ', score ' + res.score + ')');
+  }
+  // 60 回合自然限着: 120 plies without capture (no repetition) → draw
+  { const p = new Position(); const seen = new Set([p.hl + ':' + p.hh]); let stuck = false, early = false;
+    while (p.hist.length < 120) { // greedy walk: first non-capture move reaching an unseen position that does not end the game early
+      let pick;
+      for (const m of p.legalMoves()) { if (p.board[m % 90]) continue; p.makeMove(m); const k = p.hl + ':' + p.hh, st = p.status(); p.unmakeMove(); if (!seen.has(k) && (!st.over || st.result === 'nocapture')) { pick = m; break; } }
+      if (pick === undefined) { stuck = true; break; }
+      p.makeMove(pick); seen.add(p.hl + ':' + p.hh); if (p.hist.length < 120 && p.status().over) { early = true; break; }
+    }
+    const st = p.status();
+    ok(!stuck && !early && st.over && st.result === 'nocapture' && XQ.resultText(st) === '六十回合无吃子，和棋', '自然限着: 120 步无吃子 → 和棋 (' + p.hist.length + ' plies)');
+    p.unmakeMove(); ok(!p.status().over, '自然限着: 第 119 步时未结束'); }
+}
 // notation
 {
   const p = new Position();

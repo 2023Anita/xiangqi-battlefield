@@ -52,6 +52,7 @@ button{font-family:var(--font);cursor:pointer}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.sep{margin-left:6px}
 #btnPanel{display:none}
+body.r2d .only3d{display:none!important}
 /* banner */
 .banner{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%) scale(.8);opacity:0;pointer-events:none;z-index:8;text-align:center;transition:all .35s cubic-bezier(.2,1.4,.4,1);padding:18px 46px 16px;min-width:300px}
 .banner.show{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
@@ -63,7 +64,7 @@ button{font-family:var(--font);cursor:pointer}
 .banner.win-black{background:linear-gradient(180deg,#245e62,#12373a)} .banner.draw{background:linear-gradient(180deg,#6b5a44,#3e3224)}
 .banner .acts{margin-top:12px;display:flex;gap:10px;justify-content:center}
 /* toast */
-#toast{position:fixed;left:50%;top:84px;transform:translateX(-50%) translateY(-8px);opacity:0;transition:all .25s;z-index:9;background:rgba(43,29,20,.88);color:#f8ecd2;padding:7px 16px;border-radius:16px;font-size:15px;pointer-events:none;max-width:90vw;text-align:center}
+#toast{position:fixed;left:50%;top:84px;transform:translateX(-50%) translateY(-8px);opacity:0;transition:all .25s;z-index:25;background:rgba(43,29,20,.88);color:#f8ecd2;padding:7px 16px;border-radius:16px;font-size:15px;pointer-events:none;max-width:90vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}
 /* modals */
 .modal{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,.45);backdrop-filter:blur(2px)}
@@ -144,10 +145,10 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
   <button class="btn" id="btnHint">提示</button>
   <button class="btn" id="btnDraw" style="display:none">求和</button>
   <button class="btn" id="btnResign" style="display:none">认输</button>
-  <button class="btn sep" id="btn2d">2D 俯视</button>
-  <button class="btn" id="btnLight">光照·晨光</button>
-  <button class="btn" id="btnSketch">草图模式</button>
-  <button class="btn" id="btnLabels">字牌</button>
+  <button class="btn sep only3d" id="btn2d">2D 俯视</button>
+  <button class="btn only3d" id="btnLight">光照·晨光</button>
+  <button class="btn only3d" id="btnSketch">草图模式</button>
+  <button class="btn only3d" id="btnLabels">字牌</button>
   <button class="btn" id="btnMute">音效·开</button>
   <button class="btn" id="btnSave">存档/读档</button>
   <button class="btn" id="btnPanel">棋谱</button>

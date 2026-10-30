@@ -8,6 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createPiece, buildBattlefield, heightAt, updateFlag, SK, MAT, PAL, labelTexture, NAMES } from './models.js';
 import { Sfx } from './audio.js';
 import { PeerTransport, newRoomCode, normalizeRoomCode, errorText } from './net.js';
+import { createBoard2D } from './board2d.js';
 
 const XQ = window.XQ, AIlib = window.XQAI;
 const { Position, mvFrom, mvTo, RED, BLACK } = XQ;
@@ -17,13 +18,25 @@ const params = new URLSearchParams(location.search);
 
 // ============ renderer / scene ============
 const canvas = $('#c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+// WebGL detection: fall back to the 2D Canvas board when WebGL2 is unavailable, the renderer throws, or ?renderer=2d
+let renderer = null, fallbackReason = '';
+if (params.get('renderer') === '2d') fallbackReason = 'param';
+else {
+  try {
+    const probe = document.createElement('canvas');
+    if (!probe.getContext('webgl2')) throw new Error('no webgl2');
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  } catch (e) { console.warn('WebGL unavailable, using 2D board:', e && e.message); renderer = null; fallbackReason = 'nowebgl'; }
+}
+const MODE2D = !renderer;
 const DPR = Math.min(devicePixelRatio || 1, isMobile ? 1.75 : 2);
-renderer.setPixelRatio(DPR); SK.uDpr.value = DPR;
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
+if (renderer) {
+  renderer.setPixelRatio(DPR); SK.uDpr.value = DPR;
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+}
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 200);
 const controls = new OrbitControls(camera, canvas);
@@ -31,17 +44,16 @@ controls.enableDamping = true; controls.dampingFactor = 0.08; controls.minDistan
 controls.maxPolarAngle = 1.32; controls.minPolarAngle = 0.0; controls.enablePan = true; controls.screenSpacePanning = false; controls.panSpeed = 0.6;
 controls.target.set(0, 0, 0.4);
 const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR, { type: THREE.HalfFloatType, samples: 4 });
-const composer = new EffectComposer(renderer, rt);
-composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.5, 1.15); composer.addPass(bloom);
-composer.addPass(new OutputPass());
+const composer = renderer ? new EffectComposer(renderer, rt) : null;
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.5, 1.15);
+if (composer) { composer.addPass(new RenderPass(scene, camera)); composer.addPass(bloom); composer.addPass(new OutputPass()); }
 
 const hemi = new THREE.HemisphereLight('#e8f0ff', '#b39a72', 1.1); scene.add(hemi);
 const sun = new THREE.DirectionalLight('#fff1d6', 2.4); sun.castShadow = true;
 sun.shadow.mapSize.set(isMobile ? 1024 : 2048, isMobile ? 1024 : 2048); const sc = sun.shadow.camera; sc.left = -7.5; sc.right = 7.5; sc.top = 7.5; sc.bottom = -7.5; sc.near = 1; sc.far = 40;
 sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.025; sun.shadow.radius = 3;
 scene.add(sun, sun.target);
-const field = buildBattlefield(scene);
+const field = MODE2D ? null : buildBattlefield(scene);
 
 // ============ lighting presets ============
 function gradTex(top, bottom, stars) {
@@ -57,6 +69,7 @@ const PRESETS = {
 const view = { light: localStorage.getItem('xqbf-light') || 'morning', sketch: false, mode2d: false, labels: false, side: RED };
 function applyLight() {
   const p = PRESETS[view.light] || PRESETS.morning;
+  if (MODE2D) { document.body.dataset.light = 'morning'; return; }
   if (view.sketch) {
     scene.background = new THREE.Color('#f5f3ec'); hemi.color.set('#ffffff'); hemi.groundColor.set('#d8d4ca'); hemi.intensity = 1.25;
     sun.color.set('#ffffff'); sun.intensity = 2.0; sun.position.set(-6, 13, 8); renderer.toneMapping = THREE.NoToneMapping; bloom.enabled = false;
@@ -162,12 +175,14 @@ function spawn(code, sq) {
 }
 function removePiece(p) { scene.remove(p.root); allPieces.delete(p); p.root.traverse((o) => { if (o.userData.fadeMat) o.material.dispose(); }); }
 function setupPieces() {
+  if (MODE2D) { board2d.reset(); return; }
   for (const p of [...allPieces]) removePiece(p);
   pieces = new Array(90).fill(null);
   for (let s = 0; s < 90; s++) { const c = game.pos.board[s]; if (c) pieces[s] = spawn(c, s); }
 }
 // diff-sync visuals to the position (used by undo / load / network sync)
 async function syncPieces(animated = true) {
+  if (MODE2D) return board2d.sync(animated);
   const want = game.pos.board, next = new Array(90).fill(null), pool = [];
   for (let s = 0; s < 90; s++) { const p = pieces[s]; if (!p) continue; if (want[s] === p.code) next[s] = p; else pool.push(p); }
   const jobs = [];
@@ -240,6 +255,7 @@ async function killPiece(v, dir, strong = 1) {
 }
 
 async function animateMove(m, info) {
+  if (MODE2D) return board2d.animate(m);
   const f = mvFrom(m), t = mvTo(m), p = pieces[f], victim = pieces[t];
   if (!p) return;
   pieces[f] = null; pieces[t] = p; p.sq = t;
@@ -380,7 +396,7 @@ function rebuildNotes(pos) { // replay to build Chinese notation list
 function clearSelection() { game.selected = -1; game.targets = []; selRing.visible = false; hintMove.count = 0; hintCap.count = 0; const sp = game.selPiece; if (sp) { sp.root.position.y = heightAt(sp.root.position.x, sp.root.position.z); game.selPiece = null; } }
 function select(sq) {
   clearSelection();
-  const p = pieces[sq]; if (!p) return;
+  const p = pieces[sq]; if (!p && !game.pos.board[sq]) return;
   game.selected = sq; game.selPiece = p; game.targets = game.pos.legalFrom(sq);
   const v = sqPos(sq); selRing.position.set(v.x, heightAt(v.x, v.z) + 0.02, v.z); selRing.visible = true;
   let a = 0, b = 0; const d = new THREE.Object3D();
@@ -436,12 +452,15 @@ async function playMove(m, source) {
   return true;
 }
 
-const RESULT_TXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '三次重复局面·和棋', nocapture: '六十回合未吃子·和棋', material: '双方无进攻子力·和棋', resign: '认输', draw: '议和', timeout: '超时' };
+const RESULT_TXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '循环局面，和棋', nocapture: '六十回合无吃子，和棋', material: '双方无进攻子力，和棋', resign: '认输', draw: '议和', timeout: '超时' };
+const resultReason = (st) => (XQ.resultText ? XQ.resultText(st) : '') || RESULT_TXT[st.result] || '';
 function endGame(st, silentNet) {
   game.result = st; cancelAI(); clearSelection();
   let title, sub;
-  if (st.winner) { title = (st.result === 'checkmate' ? '绝 杀！' : st.result === 'stalemate' ? '困 毙！' : st.result === 'resign' ? '认 输' : '胜 负') ; sub = sideName(st.winner) + '胜 · ' + (RESULT_TXT[st.result] || ''); }
-  else { title = '和 棋'; sub = RESULT_TXT[st.result] || '和棋'; }
+  const perpetual = st.result === 'perpetual_check' || st.result === 'perpetual_chase';
+  if (st.winner && perpetual) { title = st.result === 'perpetual_check' ? '长 将' : '长 捉'; sub = resultReason(st) + ' · ' + sideName(st.winner) + '胜'; }
+  else if (st.winner) { title = (st.result === 'checkmate' ? '绝 杀！' : st.result === 'stalemate' ? '困 毙！' : st.result === 'resign' ? '认 输' : '胜 负') ; sub = sideName(st.winner) + '胜 · ' + resultReason(st); }
+  else { title = '和 棋'; sub = resultReason(st) || '和棋'; }
   showBanner(title, sub, st.winner > 0 ? 'win-red' : st.winner < 0 ? 'win-black' : 'draw', 0, true);
   sfx.play('gong');
   if (st.winner) victoryCamera(st.winner);
@@ -486,7 +505,7 @@ async function showHint() {
   toast('军师推演中…'); const ply = game.pos.hist.length;
   const { r } = await askEngine({ depth: 6, time: 900 });
   if (!r || !r.move || game.pos.hist.length !== ply) return;
-  hideHint(); const a = sqPos(mvFrom(r.move)), b = sqPos(mvTo(r.move));
+  hideHint(); game.hintMove = r.move; const a = sqPos(mvFrom(r.move)), b = sqPos(mvTo(r.move));
   const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.4, 2.2, 1.2), transparent: true, opacity: 0.85, depthWrite: false });
   const len = a.distanceTo(b); const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, Math.max(0.01, len - 0.3)), mat); const head = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.3, 3), mat);
   shaft.position.set(0, 0, -len / 2 + 0.15 - 0.15); head.rotation.x = -Math.PI / 2; head.position.set(0, 0, -len + 0.15);
@@ -494,7 +513,7 @@ async function showHint() {
   toast('建议：' + game.pos.notation(r.move));
   select(mvFrom(r.move));
 }
-function hideHint() { hintArrow.clear(); }
+function hideHint() { hintArrow.clear(); game.hintMove = 0; }
 
 // ============ undo ============
 function undo() {
@@ -541,7 +560,7 @@ function animateCamera(pos, tgt, dur = 1.0) {
 function orientCamera(instant, keep) {
   const want = desiredViewSide(); const changed = want !== view.side; view.side = want;
   for (const p of allPieces) p.disc.rotation.y = view.side > 0 ? 0 : Math.PI;
-  field.riverText.rotation.z = view.side > 0 ? 0 : Math.PI;
+  if (field) field.riverText.rotation.z = view.side > 0 ? 0 : Math.PI;
   if (keep && !changed) return;
   controls.autoRotate = false;
   const g = camGoal(); if (instant) { camera.position.copy(g.pos); controls.target.copy(g.tgt); camera.lookAt(g.tgt); } else animateCamera(g.pos, g.tgt, 1.1);
@@ -558,6 +577,7 @@ function set2D(on) {
   const g = camGoal(); animateCamera(g.pos, g.tgt, 0.9);
 }
 function victoryCamera(winner) {
+  if (MODE2D) return;
   const k = game.pos.kingSq(winner); if (k < 0) return; const v = sqPos(k);
   const az = winner > 0 ? 0.6 : Math.PI + 0.6; const tgt = new THREE.Vector3(v.x, 1.25, v.z);
   const pos = tgt.clone().add(new THREE.Vector3(Math.sin(az) * 4.6, 1.9, Math.cos(az) * 4.6));
@@ -786,6 +806,7 @@ addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === '
 
 // ============ resize / loop ============
 function onResize() {
+  if (MODE2D) { board2d.resize(); return; }
   const w = innerWidth, h = innerHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); composer.setSize(w, h); bloom.resolution.set(w, h); FX.pm.uniforms.uScale.value = h * DPR * 0.5;
   controls.maxDistance = Math.max(30, boardFitDistance(0.0001) * 1.4);
 }
@@ -795,16 +816,18 @@ function frame() {
   requestAnimationFrame(frame);
   const rdt = Math.min(clock.getDelta(), 0.05), dt = rdt * timeScale;
   fpsAcc += rdt; fpsN++; if (fpsAcc > 1) { window.__fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
-  simStep(dt);
+  if (MODE2D) { simTime += dt; updateTweens(); } else simStep(dt);
   // clocks
   if (!game.result && game.notes.length && !game.busy && document.visibilityState === 'visible') { game.clocks[game.pos.side] += rdt; }
   if ((fpsN & 7) === 0) { $('#clockR').textContent = fmtClock(game.clocks[1]); $('#clockB').textContent = fmtClock(game.clocks[-1]); }
+  if (MODE2D) { board2d.draw(simTime); return; }
   camera.position.sub(shakeOff); shakeOff.set(0, 0, 0);
   controls.update();
   if (shake > 0.001) { shakeOff.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake * 0.6, (Math.random() - 0.5) * shake); camera.position.add(shakeOff); shake *= Math.pow(0.02, dt); }
   composer.render();
 }
 function simStep(dt) {
+  if (MODE2D) { simTime += dt; updateTweens(); return; }
   simTime += dt; updateTweens(); FX.update(dt);
   const t = simTime;
   field.water.uniforms.uTime.value = t;
@@ -818,6 +841,14 @@ function simStep(dt) {
 }
 
 // ============ boot ============
+let board2d = null;
+if (MODE2D) { // swap in a fresh canvas (a failed WebGL attempt can leave the original unusable) and hide the 3D-only controls
+  const c2 = document.createElement('canvas'); c2.id = 'c'; c2.setAttribute('aria-label', '2D 棋盘'); canvas.replaceWith(c2);
+  document.body.classList.add('r2d');
+  document.querySelectorAll('.only3d').forEach((b) => { b.disabled = true; b.style.display = 'none'; });
+  const tt = document.querySelector('#top .title small'); if (tt) tt.textContent = '2D';
+  board2d = createBoard2D({ canvas: c2, game, view, tween, ease, sfx, onSquare: (sq) => onSquareClick(sq) });
+}
 onResize(); applyLight();
 let restored = false;
 const roomParam = params.get('room') ? normalizeRoomCode(params.get('room')) : null;
@@ -839,10 +870,12 @@ if (!restored) {
 setNetStatus(game.net ? game.net.state || 'connecting' : 'closed');
 frame();
 $('#loading').classList.add('done');
+if (MODE2D) setTimeout(() => toast('当前设备不支持 3D，已切换到 2D 棋盘', 4500), 300);
 
 // test / debug hooks
 window.__xq = {
-  game, view, events, THREE, scene, camera, controls,
+  game, view, events, THREE, scene, camera, controls, mode2d: MODE2D, board2d, fallbackReason,
+  screenOf: (iccs) => { const sq = Position.parseIccs(iccs + 'a0') / 90 | 0; if (MODE2D) return board2d.screenOf(sq); return null; },
   get timeScale() { return timeScale; }, set timeScale(v) { timeScale = v; },
   play: (iccs) => submitMove(Position.parseIccs(iccs), 'local'),
   load: (s) => loadString(s), sketch: (on) => { view.sketch = on; applyLight(); }, light: (n) => { view.light = n; view.sketch = false; applyLight(); },

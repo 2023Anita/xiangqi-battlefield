@@ -52,6 +52,7 @@ button{font-family:var(--font);cursor:pointer}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.sep{margin-left:6px}
 #btnPanel{display:none}
+body.r2d .only3d{display:none!important}
 /* banner */
 .banner{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%) scale(.8);opacity:0;pointer-events:none;z-index:8;text-align:center;transition:all .35s cubic-bezier(.2,1.4,.4,1);padding:18px 46px 16px;min-width:300px}
 .banner.show{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
@@ -63,7 +64,7 @@ button{font-family:var(--font);cursor:pointer}
 .banner.win-black{background:linear-gradient(180deg,#245e62,#12373a)} .banner.draw{background:linear-gradient(180deg,#6b5a44,#3e3224)}
 .banner .acts{margin-top:12px;display:flex;gap:10px;justify-content:center}
 /* toast */
-#toast{position:fixed;left:50%;top:84px;transform:translateX(-50%) translateY(-8px);opacity:0;transition:all .25s;z-index:9;background:rgba(43,29,20,.88);color:#f8ecd2;padding:7px 16px;border-radius:16px;font-size:15px;pointer-events:none;max-width:90vw;text-align:center}
+#toast{position:fixed;left:50%;top:84px;transform:translateX(-50%) translateY(-8px);opacity:0;transition:all .25s;z-index:25;background:rgba(43,29,20,.88);color:#f8ecd2;padding:7px 16px;border-radius:16px;font-size:15px;pointer-events:none;max-width:90vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}
 /* modals */
 .modal{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,.45);backdrop-filter:blur(2px)}
@@ -144,10 +145,10 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
   <button class="btn" id="btnHint">提示</button>
   <button class="btn" id="btnDraw" style="display:none">求和</button>
   <button class="btn" id="btnResign" style="display:none">认输</button>
-  <button class="btn sep" id="btn2d">2D 俯视</button>
-  <button class="btn" id="btnLight">光照·晨光</button>
-  <button class="btn" id="btnSketch">草图模式</button>
-  <button class="btn" id="btnLabels">字牌</button>
+  <button class="btn sep only3d" id="btn2d">2D 俯视</button>
+  <button class="btn only3d" id="btnLight">光照·晨光</button>
+  <button class="btn only3d" id="btnSketch">草图模式</button>
+  <button class="btn only3d" id="btnLabels">字牌</button>
   <button class="btn" id="btnMute">音效·开</button>
   <button class="btn" id="btnSave">存档/读档</button>
   <button class="btn" id="btnPanel">棋谱</button>
@@ -412,12 +413,83 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
     repetitionCount() { let n = 0; for (let i = this.hist.length - 1; i >= 0; i--) { const e = this.hist[i]; if (e.hl === this.hl && e.hh === this.hh) n++; } return n; }
     pliesSinceCapture() { let n = 0; for (let i = this.hist.length - 1; i >= 0; i--) { if (this.hist[i].cap) break; n++; } return n; }
 
+    // index (into hist) of the k-th most recent earlier occurrence of the current position, or -1
+    repetitionIndex(k) { k = k || 1; for (let i = this.hist.length - 1; i >= 0; i--) { const e = this.hist[i]; if (e.hl === this.hl && e.hh === this.hh && --k === 0) return i; } return -1; }
+
+    // ---- 长将 / 长捉 (perpetual check / chase) ----
+    // legal captures of `side`: Map attackerSq -> [targetSq]
+    _captureMap(side) {
+      const ps = this.pseudoMoves(side, true), map = new Map();
+      for (const m of ps) {
+        this.makeMove(m); const ok = !this.inCheck(side); this.unmakeMove();
+        if (!ok) continue;
+        const a = mvFrom(m); let l = map.get(a); if (!l) map.set(a, (l = [])); l.push(mvTo(m));
+      }
+      return map;
+    }
+    // Does attacker on `a` "chase" (捉) the piece on `t`? Simplified Asian-rules test (current board).
+    _isChaseTarget(a, t) {
+      const b = this.board, tp = b[t], T = Math.abs(tp), ts = Math.sign(tp), At = Math.abs(b[a]);
+      if (T === K || At === K) return false;              // checks are judged separately; 将帅捉子不算
+      if (T === P && ownHalf(rowOf(t), ts)) return false;  // 未过河兵卒不算
+      if (At === T) return false;                          // 同兵种互捉 = 兑子
+      if (T === R && (At === N || At === C || At === P)) return true; // 马/炮/兵捉车
+      this.makeMove(a * 90 + t); const prot = this.attacked(t, ts); this.unmakeMove();
+      return !prot;                                        // 捉无根子
+    }
+    // Info for move m from the current position: {chk: gives check, chase: [target squares newly chased]}
+    moveInfo(m) {
+      const side = this.side, f = mvFrom(m), t = mvTo(m);
+      const before = this._captureMap(side);
+      this.makeMove(m);
+      const chk = this.inCheck(-side), after = this._captureMap(side), chase = [];
+      for (const [a, ts] of after) {
+        const prev = before.get(a === t ? f : a) || [];
+        for (const x of ts) if (prev.indexOf(x) < 0 && this._isChaseTarget(a, x)) chase.push(x);
+      }
+      this.unmakeMove();
+      return { chk, chase };
+    }
+    // Adjudicate the repetition cycle hist[start..end). Restores the position exactly.
+    // Returns {loser: RED|BLACK|0, kind: 'check'|'chase'|null}
+    cycleVerdict(start) {
+      const n = this.hist.length; if (start < 0 || start >= n) return { loser: 0, kind: null };
+      for (let i = start; i < n; i++) if (this.hist[i].m < 0) return { loser: 0, kind: null };
+      const moves = []; while (this.hist.length > start) moves.push(this.unmakeMove().m); moves.reverse();
+      const s0 = this.side, idx = (side) => (side === RED ? 0 : 1);
+      // pass 1: checks (cheap)
+      const allChk = [true, true], chk = [];
+      for (const m of moves) { const sd = this.side; this.makeMove(m); const c = this.inCheck(this.side); chk.push(c); if (!c) allChk[idx(sd)] = false; }
+      let verdict = null;
+      if (allChk[0] && !allChk[1]) verdict = { loser: RED, kind: 'check' };
+      else if (allChk[1] && !allChk[0]) verdict = { loser: BLACK, kind: 'check' };
+      else if (allChk[0] && allChk[1]) verdict = { loser: 0, kind: null };
+      if (!verdict) { // pass 2: chases (一将一捉 also counts as 长捉)
+        for (let i = 0; i < moves.length; i++) this.unmakeMove();
+        const viol = [true, true];
+        for (let i = 0; i < moves.length; i++) {
+          const sd = this.side;
+          if (viol[idx(sd)] && !chk[i]) { const inf = this.moveInfo(moves[i]); if (!inf.chase.length) viol[idx(sd)] = false; }
+          this.makeMove(moves[i]);
+        }
+        if (viol[0] && !viol[1]) verdict = { loser: RED, kind: 'chase' };
+        else if (viol[1] && !viol[0]) verdict = { loser: BLACK, kind: 'chase' };
+        else verdict = { loser: 0, kind: null };
+      }
+      void s0;
+      return verdict;
+    }
+
     // status of the side to move
     status() {
       const moves = this.legalMoves();
       const check = this.inCheck(this.side);
       if (!moves.length) return { over: true, result: check ? 'checkmate' : 'stalemate', winner: -this.side, check };
-      if (this.repetitionCount() >= 2) return { over: true, result: 'repetition', winner: 0, check };
+      if (this.repetitionCount() >= 2) { // 3rd occurrence: judge the moves since the previous-but-one occurrence
+        const v = this.cycleVerdict(this.repetitionIndex(2));
+        if (v.loser) return { over: true, result: v.kind === 'check' ? 'perpetual_check' : 'perpetual_chase', winner: -v.loser, loser: v.loser, check };
+        return { over: true, result: 'repetition', winner: 0, check };
+      }
       if (this.pliesSinceCapture() >= 120) return { over: true, result: 'nocapture', winner: 0, check };
       if (!this._hasAttackers()) return { over: true, result: 'material', winner: 0, check };
       return { over: false, check, moves };
@@ -492,7 +564,17 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
     return n;
   }
 
-  const XQ = { Position, perft, K, A, B, N, R, C, P, RED, BLACK, START_FEN, NAMES_RED, NAMES_BLACK, mv, mvFrom, mvTo, rowOf, colOf, ZL, ZH };
+  const RESULT_TEXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '循环局面，和棋', nocapture: '六十回合无吃子，和棋', material: '双方无进攻子力，和棋', resign: '认输', draw: '议和', timeout: '超时' };
+  // Chinese reason line for a status() / game result object
+  function resultText(st) {
+    if (!st) return '';
+    const sideCN = (s) => (s > 0 ? '红方' : '黑方');
+    if (st.result === 'perpetual_check') return sideCN(st.loser || -st.winner) + '长将，判负';
+    if (st.result === 'perpetual_chase') return sideCN(st.loser || -st.winner) + '长捉，判负';
+    return RESULT_TEXT[st.result] || '';
+  }
+
+  const XQ = { Position, perft, resultText, K, A, B, N, R, C, P, RED, BLACK, START_FEN, NAMES_RED, NAMES_BLACK, mv, mvFrom, mvTo, rowOf, colOf, ZL, ZH };
   root.XQ = XQ;
   if (typeof module !== 'undefined' && module.exports) module.exports = XQ;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
@@ -506,7 +588,7 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
   'use strict';
   const XQ = root.XQ || (typeof require === 'function' ? require('./engine.js') : null);
   const { K, A, B, N, R, C, P, RED } = XQ;
-  const MATE = 30000, WIN = MATE - 200;
+  const MATE = 30000, WIN = MATE - 200, PERP = 6000; // PERP: 长将/长捉 判负 score (a loss, but below mate scores)
   const VAL = [0, 0, 120, 120, 270, 600, 285, 30];
 
   // Piece-square tables from Red's perspective, indexed by sq (r=0 top/enemy side, r=9 own back rank)
@@ -559,8 +641,15 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
 
     function timeUp() { if ((++nodes & 2047) === 0 && Date.now() - t0 > timeLimit) stop = true; return stop; }
 
-    function isRepeat() { // repetition within search path or game history -> draw-ish
-      const n = pos.hist.length; for (let i = n - 2; i >= 0 && i >= n - 30; i -= 2) { const e = pos.hist[i]; if (e.hl === pos.hl && e.hh === pos.hh) return true; } return false;
+    // repetition within the search path or game history: index of the earlier occurrence, or -1
+    function repeatIndex() {
+      const n = pos.hist.length; for (let i = n - 2; i >= 0 && i >= n - 30; i -= 2) { const e = pos.hist[i]; if (e.hl === pos.hl && e.hh === pos.hh) return i; } return -1;
+    }
+    // score of a repetition for the side to move: perpetual checker / chaser loses (Asian rules), otherwise draw
+    function repetitionScore(i) {
+      const v = pos.cycleVerdict(i);
+      if (!v.loser) return 0;
+      return v.loser === pos.side ? -PERP : PERP;
     }
 
     function order(moves, ttm, ply) {
@@ -598,7 +687,7 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
     }
 
     function negamax(depth, alpha, beta, ply, allowNull) {
-      if (ply > 0 && isRepeat()) return 0;
+      if (ply > 0) { const ri = repeatIndex(); if (ri >= 0) return repetitionScore(ri); }
       const side = pos.side, check = pos.inCheck(side);
       if (check) depth++; // check extension
       if (depth <= 0) return quiesce(alpha, beta, ply);
@@ -681,7 +770,7 @@ body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0
   }
 
   const LEVELS = { easy: { depth: 2, time: 400, noise: 80 }, medium: { depth: 5, time: 900, noise: 12 }, hard: { depth: 14, time: 2500, noise: 0 } };
-  const AI = { search, evaluate, LEVELS };
+  const AI = { search, evaluate, LEVELS, PERP };
   root.XQAI = AI;
   if (typeof module !== 'undefined' && module.exports) module.exports = AI;
 
@@ -4960,6 +5049,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createPiece, buildBattlefield, heightAt, updateFlag, SK, MAT, PAL, labelTexture, NAMES } from 'app/models.js';
 import { Sfx } from 'app/audio.js';
 import { PeerTransport, newRoomCode, normalizeRoomCode, errorText } from 'app/net.js';
+import { createBoard2D } from 'app/board2d.js';
 
 const XQ = window.XQ, AIlib = window.XQAI;
 const { Position, mvFrom, mvTo, RED, BLACK } = XQ;
@@ -4969,13 +5059,25 @@ const params = new URLSearchParams(location.search);
 
 // ============ renderer / scene ============
 const canvas = $('#c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+// WebGL detection: fall back to the 2D Canvas board when WebGL2 is unavailable, the renderer throws, or ?renderer=2d
+let renderer = null, fallbackReason = '';
+if (params.get('renderer') === '2d') fallbackReason = 'param';
+else {
+  try {
+    const probe = document.createElement('canvas');
+    if (!probe.getContext('webgl2')) throw new Error('no webgl2');
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  } catch (e) { console.warn('WebGL unavailable, using 2D board:', e && e.message); renderer = null; fallbackReason = 'nowebgl'; }
+}
+const MODE2D = !renderer;
 const DPR = Math.min(devicePixelRatio || 1, isMobile ? 1.75 : 2);
-renderer.setPixelRatio(DPR); SK.uDpr.value = DPR;
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
+if (renderer) {
+  renderer.setPixelRatio(DPR); SK.uDpr.value = DPR;
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+}
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 200);
 const controls = new OrbitControls(camera, canvas);
@@ -4983,17 +5085,16 @@ controls.enableDamping = true; controls.dampingFactor = 0.08; controls.minDistan
 controls.maxPolarAngle = 1.32; controls.minPolarAngle = 0.0; controls.enablePan = true; controls.screenSpacePanning = false; controls.panSpeed = 0.6;
 controls.target.set(0, 0, 0.4);
 const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR, { type: THREE.HalfFloatType, samples: 4 });
-const composer = new EffectComposer(renderer, rt);
-composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.5, 1.15); composer.addPass(bloom);
-composer.addPass(new OutputPass());
+const composer = renderer ? new EffectComposer(renderer, rt) : null;
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.5, 1.15);
+if (composer) { composer.addPass(new RenderPass(scene, camera)); composer.addPass(bloom); composer.addPass(new OutputPass()); }
 
 const hemi = new THREE.HemisphereLight('#e8f0ff', '#b39a72', 1.1); scene.add(hemi);
 const sun = new THREE.DirectionalLight('#fff1d6', 2.4); sun.castShadow = true;
 sun.shadow.mapSize.set(isMobile ? 1024 : 2048, isMobile ? 1024 : 2048); const sc = sun.shadow.camera; sc.left = -7.5; sc.right = 7.5; sc.top = 7.5; sc.bottom = -7.5; sc.near = 1; sc.far = 40;
 sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.025; sun.shadow.radius = 3;
 scene.add(sun, sun.target);
-const field = buildBattlefield(scene);
+const field = MODE2D ? null : buildBattlefield(scene);
 
 // ============ lighting presets ============
 function gradTex(top, bottom, stars) {
@@ -5009,6 +5110,7 @@ const PRESETS = {
 const view = { light: localStorage.getItem('xqbf-light') || 'morning', sketch: false, mode2d: false, labels: false, side: RED };
 function applyLight() {
   const p = PRESETS[view.light] || PRESETS.morning;
+  if (MODE2D) { document.body.dataset.light = 'morning'; return; }
   if (view.sketch) {
     scene.background = new THREE.Color('#f5f3ec'); hemi.color.set('#ffffff'); hemi.groundColor.set('#d8d4ca'); hemi.intensity = 1.25;
     sun.color.set('#ffffff'); sun.intensity = 2.0; sun.position.set(-6, 13, 8); renderer.toneMapping = THREE.NoToneMapping; bloom.enabled = false;
@@ -5114,12 +5216,14 @@ function spawn(code, sq) {
 }
 function removePiece(p) { scene.remove(p.root); allPieces.delete(p); p.root.traverse((o) => { if (o.userData.fadeMat) o.material.dispose(); }); }
 function setupPieces() {
+  if (MODE2D) { board2d.reset(); return; }
   for (const p of [...allPieces]) removePiece(p);
   pieces = new Array(90).fill(null);
   for (let s = 0; s < 90; s++) { const c = game.pos.board[s]; if (c) pieces[s] = spawn(c, s); }
 }
 // diff-sync visuals to the position (used by undo / load / network sync)
 async function syncPieces(animated = true) {
+  if (MODE2D) return board2d.sync(animated);
   const want = game.pos.board, next = new Array(90).fill(null), pool = [];
   for (let s = 0; s < 90; s++) { const p = pieces[s]; if (!p) continue; if (want[s] === p.code) next[s] = p; else pool.push(p); }
   const jobs = [];
@@ -5192,6 +5296,7 @@ async function killPiece(v, dir, strong = 1) {
 }
 
 async function animateMove(m, info) {
+  if (MODE2D) return board2d.animate(m);
   const f = mvFrom(m), t = mvTo(m), p = pieces[f], victim = pieces[t];
   if (!p) return;
   pieces[f] = null; pieces[t] = p; p.sq = t;
@@ -5332,7 +5437,7 @@ function rebuildNotes(pos) { // replay to build Chinese notation list
 function clearSelection() { game.selected = -1; game.targets = []; selRing.visible = false; hintMove.count = 0; hintCap.count = 0; const sp = game.selPiece; if (sp) { sp.root.position.y = heightAt(sp.root.position.x, sp.root.position.z); game.selPiece = null; } }
 function select(sq) {
   clearSelection();
-  const p = pieces[sq]; if (!p) return;
+  const p = pieces[sq]; if (!p && !game.pos.board[sq]) return;
   game.selected = sq; game.selPiece = p; game.targets = game.pos.legalFrom(sq);
   const v = sqPos(sq); selRing.position.set(v.x, heightAt(v.x, v.z) + 0.02, v.z); selRing.visible = true;
   let a = 0, b = 0; const d = new THREE.Object3D();
@@ -5388,12 +5493,15 @@ async function playMove(m, source) {
   return true;
 }
 
-const RESULT_TXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '三次重复局面·和棋', nocapture: '六十回合未吃子·和棋', material: '双方无进攻子力·和棋', resign: '认输', draw: '议和', timeout: '超时' };
+const RESULT_TXT = { checkmate: '绝杀', stalemate: '困毙', repetition: '循环局面，和棋', nocapture: '六十回合无吃子，和棋', material: '双方无进攻子力，和棋', resign: '认输', draw: '议和', timeout: '超时' };
+const resultReason = (st) => (XQ.resultText ? XQ.resultText(st) : '') || RESULT_TXT[st.result] || '';
 function endGame(st, silentNet) {
   game.result = st; cancelAI(); clearSelection();
   let title, sub;
-  if (st.winner) { title = (st.result === 'checkmate' ? '绝 杀！' : st.result === 'stalemate' ? '困 毙！' : st.result === 'resign' ? '认 输' : '胜 负') ; sub = sideName(st.winner) + '胜 · ' + (RESULT_TXT[st.result] || ''); }
-  else { title = '和 棋'; sub = RESULT_TXT[st.result] || '和棋'; }
+  const perpetual = st.result === 'perpetual_check' || st.result === 'perpetual_chase';
+  if (st.winner && perpetual) { title = st.result === 'perpetual_check' ? '长 将' : '长 捉'; sub = resultReason(st) + ' · ' + sideName(st.winner) + '胜'; }
+  else if (st.winner) { title = (st.result === 'checkmate' ? '绝 杀！' : st.result === 'stalemate' ? '困 毙！' : st.result === 'resign' ? '认 输' : '胜 负') ; sub = sideName(st.winner) + '胜 · ' + resultReason(st); }
+  else { title = '和 棋'; sub = resultReason(st) || '和棋'; }
   showBanner(title, sub, st.winner > 0 ? 'win-red' : st.winner < 0 ? 'win-black' : 'draw', 0, true);
   sfx.play('gong');
   if (st.winner) victoryCamera(st.winner);
@@ -5438,7 +5546,7 @@ async function showHint() {
   toast('军师推演中…'); const ply = game.pos.hist.length;
   const { r } = await askEngine({ depth: 6, time: 900 });
   if (!r || !r.move || game.pos.hist.length !== ply) return;
-  hideHint(); const a = sqPos(mvFrom(r.move)), b = sqPos(mvTo(r.move));
+  hideHint(); game.hintMove = r.move; const a = sqPos(mvFrom(r.move)), b = sqPos(mvTo(r.move));
   const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.4, 2.2, 1.2), transparent: true, opacity: 0.85, depthWrite: false });
   const len = a.distanceTo(b); const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, Math.max(0.01, len - 0.3)), mat); const head = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.3, 3), mat);
   shaft.position.set(0, 0, -len / 2 + 0.15 - 0.15); head.rotation.x = -Math.PI / 2; head.position.set(0, 0, -len + 0.15);
@@ -5446,7 +5554,7 @@ async function showHint() {
   toast('建议：' + game.pos.notation(r.move));
   select(mvFrom(r.move));
 }
-function hideHint() { hintArrow.clear(); }
+function hideHint() { hintArrow.clear(); game.hintMove = 0; }
 
 // ============ undo ============
 function undo() {
@@ -5493,7 +5601,7 @@ function animateCamera(pos, tgt, dur = 1.0) {
 function orientCamera(instant, keep) {
   const want = desiredViewSide(); const changed = want !== view.side; view.side = want;
   for (const p of allPieces) p.disc.rotation.y = view.side > 0 ? 0 : Math.PI;
-  field.riverText.rotation.z = view.side > 0 ? 0 : Math.PI;
+  if (field) field.riverText.rotation.z = view.side > 0 ? 0 : Math.PI;
   if (keep && !changed) return;
   controls.autoRotate = false;
   const g = camGoal(); if (instant) { camera.position.copy(g.pos); controls.target.copy(g.tgt); camera.lookAt(g.tgt); } else animateCamera(g.pos, g.tgt, 1.1);
@@ -5510,6 +5618,7 @@ function set2D(on) {
   const g = camGoal(); animateCamera(g.pos, g.tgt, 0.9);
 }
 function victoryCamera(winner) {
+  if (MODE2D) return;
   const k = game.pos.kingSq(winner); if (k < 0) return; const v = sqPos(k);
   const az = winner > 0 ? 0.6 : Math.PI + 0.6; const tgt = new THREE.Vector3(v.x, 1.25, v.z);
   const pos = tgt.clone().add(new THREE.Vector3(Math.sin(az) * 4.6, 1.9, Math.cos(az) * 4.6));
@@ -5738,6 +5847,7 @@ addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === '
 
 // ============ resize / loop ============
 function onResize() {
+  if (MODE2D) { board2d.resize(); return; }
   const w = innerWidth, h = innerHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); composer.setSize(w, h); bloom.resolution.set(w, h); FX.pm.uniforms.uScale.value = h * DPR * 0.5;
   controls.maxDistance = Math.max(30, boardFitDistance(0.0001) * 1.4);
 }
@@ -5747,16 +5857,18 @@ function frame() {
   requestAnimationFrame(frame);
   const rdt = Math.min(clock.getDelta(), 0.05), dt = rdt * timeScale;
   fpsAcc += rdt; fpsN++; if (fpsAcc > 1) { window.__fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
-  simStep(dt);
+  if (MODE2D) { simTime += dt; updateTweens(); } else simStep(dt);
   // clocks
   if (!game.result && game.notes.length && !game.busy && document.visibilityState === 'visible') { game.clocks[game.pos.side] += rdt; }
   if ((fpsN & 7) === 0) { $('#clockR').textContent = fmtClock(game.clocks[1]); $('#clockB').textContent = fmtClock(game.clocks[-1]); }
+  if (MODE2D) { board2d.draw(simTime); return; }
   camera.position.sub(shakeOff); shakeOff.set(0, 0, 0);
   controls.update();
   if (shake > 0.001) { shakeOff.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake * 0.6, (Math.random() - 0.5) * shake); camera.position.add(shakeOff); shake *= Math.pow(0.02, dt); }
   composer.render();
 }
 function simStep(dt) {
+  if (MODE2D) { simTime += dt; updateTweens(); return; }
   simTime += dt; updateTweens(); FX.update(dt);
   const t = simTime;
   field.water.uniforms.uTime.value = t;
@@ -5770,6 +5882,14 @@ function simStep(dt) {
 }
 
 // ============ boot ============
+let board2d = null;
+if (MODE2D) { // swap in a fresh canvas (a failed WebGL attempt can leave the original unusable) and hide the 3D-only controls
+  const c2 = document.createElement('canvas'); c2.id = 'c'; c2.setAttribute('aria-label', '2D 棋盘'); canvas.replaceWith(c2);
+  document.body.classList.add('r2d');
+  document.querySelectorAll('.only3d').forEach((b) => { b.disabled = true; b.style.display = 'none'; });
+  const tt = document.querySelector('#top .title small'); if (tt) tt.textContent = '2D';
+  board2d = createBoard2D({ canvas: c2, game, view, tween, ease, sfx, onSquare: (sq) => onSquareClick(sq) });
+}
 onResize(); applyLight();
 let restored = false;
 const roomParam = params.get('room') ? normalizeRoomCode(params.get('room')) : null;
@@ -5791,10 +5911,12 @@ if (!restored) {
 setNetStatus(game.net ? game.net.state || 'connecting' : 'closed');
 frame();
 $('#loading').classList.add('done');
+if (MODE2D) setTimeout(() => toast('当前设备不支持 3D，已切换到 2D 棋盘', 4500), 300);
 
 // test / debug hooks
 window.__xq = {
-  game, view, events, THREE, scene, camera, controls,
+  game, view, events, THREE, scene, camera, controls, mode2d: MODE2D, board2d, fallbackReason,
+  screenOf: (iccs) => { const sq = Position.parseIccs(iccs + 'a0') / 90 | 0; if (MODE2D) return board2d.screenOf(sq); return null; },
   get timeScale() { return timeScale; }, set timeScale(v) { timeScale = v; },
   play: (iccs) => submitMove(Position.parseIccs(iccs), 'local'),
   load: (s) => loadString(s), sketch: (on) => { view.sketch = on; applyLight(); }, light: (n) => { view.light = n; view.sketch = false; applyLight(); },
@@ -6529,6 +6651,189 @@ export class PeerTransport extends GameTransport {
   send(msg) { if (this.conn && this.conn.open) { try { this.conn.send(msg); return true; } catch (e) { return false; } } return false; }
   get connected() { return !!(this.conn && this.conn.open); }
   close() { this.closed = true; clearInterval(this._hb); clearTimeout(this._connTimer); try { this.conn && this.conn.close(); } catch (e) { } try { this.peer && this.peer.destroy(); } catch (e) { } this._setStatus('closed'); }
+}
+
+</script>
+<script type="text/plain" data-mod="app/board2d.js">
+// 2D Canvas 棋盘 — fallback renderer when WebGL is unavailable (or ?renderer=2d).
+// Draws a traditional wooden board with round character pieces and drives the same game controller as the 3D view.
+// The controller calls: reset(), sync(animated), animate(m), draw(), resize(); input arrives through onSquare(sq).
+const NAMES = { 1: ['', '帅', '仕', '相', '马', '车', '炮', '兵'], '-1': ['', '将', '士', '象', '马', '车', '炮', '卒'] };
+const FONT = '"KaiTi","STKaiti","Kaiti SC","楷体","BiauKai","Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif';
+
+export function createBoard2D({ canvas, game, view, tween, ease, sfx, onSquare }) {
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = 1, cell = 40, ox = 0, oy = 0; // ox/oy = screen position of board point (col 0,row 0) in the current orientation
+  let sprites = []; // {code, sq, r, c, alpha, scale, lift}
+  let t = 0;
+
+  // ---------- layout ----------
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+    canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+    const wide = W > 760, padSide = wide ? (W > 900 ? 236 : 200) : 8, padTop = wide ? 66 : 50, padBot = wide ? 64 : 60;
+    const aw = Math.max(200, W - 2 * padSide), ah = Math.max(200, H - padTop - padBot);
+    cell = Math.max(18, Math.min(aw / 9.3, ah / 10.3));
+    ox = padSide + (aw - cell * 8) / 2; oy = padTop + (ah - cell * 9) / 2;
+  }
+  const flip = () => view.side < 0;
+  // board (row, col) floats → screen px
+  function toScreen(r, c) { if (flip()) { r = 9 - r; c = 8 - c; } return [ox + c * cell, oy + r * cell]; }
+  function squareAt(x, y) {
+    let c = Math.round((x - ox) / cell), r = Math.round((y - oy) / cell);
+    if (c < 0 || c > 8 || r < 0 || r > 9) return -1;
+    if (Math.hypot(x - (ox + c * cell), y - (oy + r * cell)) > cell * 0.5) return -1;
+    if (flip()) { r = 9 - r; c = 8 - c; }
+    return r * 9 + c;
+  }
+
+  // ---------- sprites ----------
+  const mk = (code, sq) => ({ code, sq, r: (sq / 9) | 0, c: sq % 9, alpha: 1, scale: 1, lift: 0 });
+  function reset() { sprites = []; const b = game.pos.board; for (let s = 0; s < 90; s++) if (b[s]) sprites.push(mk(b[s], s)); }
+  const at = (sq) => sprites.find((p) => p.sq === sq && !p.dying);
+  function fade(p, dur) { p.dying = true; return tween(dur, (k) => { p.alpha = 1 - k; p.scale = 1 + 0.35 * k; }).then(() => { sprites = sprites.filter((x) => x !== p); }); }
+  function slide(p, sq, dur) {
+    const r0 = p.r, c0 = p.c, r1 = (sq / 9) | 0, c1 = sq % 9; p.sq = sq;
+    return tween(dur, (k) => { p.r = r0 + (r1 - r0) * k; p.c = c0 + (c1 - c0) * k; p.lift = Math.sin(k * Math.PI); }, ease.inOut).then(() => { p.r = r1; p.c = c1; p.lift = 0; });
+  }
+  async function animate(m) {
+    const f = (m / 90) | 0, to = m % 90, p = at(f), victim = at(to);
+    if (!p) { reset(); return; }
+    sprites = sprites.filter((x) => x !== p); sprites.push(p); // draw mover on top
+    const dist = Math.hypot(((to / 9) | 0) - p.r, (to % 9) - p.c);
+    sfx.play(Math.abs(p.code) === 4 ? 'hoof' : Math.abs(p.code) === 5 || Math.abs(p.code) === 6 ? 'roll' : 'step');
+    await slide(p, to, Math.min(0.55, 0.18 + dist * 0.05));
+    if (victim) { sfx.play('clash'); sfx.play('fall', 0.05); await fade(victim, 0.25); } else sfx.play('drum');
+  }
+  // diff-sync to game.pos (undo / load / network sync)
+  async function sync(animated = true) {
+    const want = game.pos.board, keep = new Set(), pool = [], jobs = [];
+    for (const p of sprites) { if (p.dying) continue; if (want[p.sq] === p.code && !keep.has(p.sq)) keep.add(p.sq); else pool.push(p); }
+    for (let s = 0; s < 90; s++) {
+      if (!want[s] || keep.has(s)) continue;
+      const i = pool.findIndex((p) => p.code === want[s]);
+      if (i >= 0) { const p = pool.splice(i, 1)[0]; if (animated) jobs.push(slide(p, s, 0.3)); else { p.sq = s; p.r = (s / 9) | 0; p.c = s % 9; } }
+      else { const p = mk(want[s], s); sprites.push(p); if (animated) { p.scale = 0.01; jobs.push(tween(0.3, (k) => (p.scale = Math.max(0.01, k)), ease.outBack)); } }
+      keep.add(s);
+    }
+    for (const p of pool) { if (animated) jobs.push(fade(p, 0.25)); else sprites = sprites.filter((x) => x !== p); }
+    await Promise.all(jobs);
+  }
+
+  // ---------- drawing ----------
+  let woodCache = null;
+  function woodPattern() { // procedural wood grain, cached per size
+    const key = Math.round(cell);
+    if (woodCache && woodCache.key === key) return woodCache.pat;
+    const w = Math.round(cell * 10 * DPR), h = Math.round(cell * 11 * DPR), c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    const g = x.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#e9c98f'); g.addColorStop(0.5, '#ddb877'); g.addColorStop(1, '#e6c286'); x.fillStyle = g; x.fillRect(0, 0, w, h);
+    let s = 7; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 90; i++) { // grain lines
+      const y0 = rnd() * h, amp = 4 + rnd() * 14, ph = rnd() * 6, fr = 0.002 + rnd() * 0.004;
+      x.strokeStyle = `rgba(${120 + rnd() * 40 | 0},${70 + rnd() * 30 | 0},${30 + rnd() * 20 | 0},${0.05 + rnd() * 0.09})`; x.lineWidth = 0.6 + rnd() * 2.2 * DPR;
+      x.beginPath(); for (let px = 0; px <= w; px += 8) { const py = y0 + Math.sin(px * fr + ph) * amp + Math.sin(px * fr * 3.1 + ph) * amp * 0.3; px ? x.lineTo(px, py) : x.moveTo(px, py); } x.stroke();
+    }
+    woodCache = { key, pat: c }; return c;
+  }
+  function line(x0, y0, x1, y1) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
+  function gl(r0, c0, r1, c1) { const [a, b] = toScreen(r0, c0), [p, q] = toScreen(r1, c1); line(a, b, p, q); }
+  function mark(r, c) { // 炮位/兵位 corner marks
+    const [x, y] = toScreen(r, c), d = cell * 0.08, l = cell * 0.2;
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      if ((c === 0 && sx < 0) || (c === 8 && sx > 0)) continue;
+      ctx.beginPath(); ctx.moveTo(x + sx * d, y + sy * (d + l)); ctx.lineTo(x + sx * d, y + sy * d); ctx.lineTo(x + sx * (d + l), y + sy * d); ctx.stroke();
+    }
+  }
+  function drawBoard() {
+    // table
+    const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75); bg.addColorStop(0, '#4a3324'); bg.addColorStop(1, '#1d140e');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    // wooden slab
+    const m = cell * 0.62, bx = ox - m, by = oy - m, bw = cell * 8 + 2 * m, bh = cell * 9 + 2 * m;
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = cell * 0.6; ctx.shadowOffsetY = cell * 0.15;
+    ctx.fillStyle = '#d9b373'; ctx.fillRect(bx, by, bw, bh); ctx.restore();
+    ctx.drawImage(woodPattern(), bx, by, bw, bh);
+    ctx.strokeStyle = '#6b3f1d'; ctx.lineWidth = Math.max(2, cell * 0.06); ctx.strokeRect(bx + cell * 0.12, by + cell * 0.12, bw - cell * 0.24, bh - cell * 0.24);
+    // grid
+    ctx.strokeStyle = '#4a2a12'; ctx.lineCap = 'square';
+    ctx.lineWidth = Math.max(2, cell * 0.05); { const [a, b] = toScreen(0, 0), [p, q] = toScreen(9, 8); ctx.strokeRect(Math.min(a, p) - cell * 0.07, Math.min(b, q) - cell * 0.07, Math.abs(p - a) + cell * 0.14, Math.abs(q - b) + cell * 0.14); }
+    ctx.lineWidth = Math.max(1, cell * 0.025);
+    for (let r = 0; r < 10; r++) gl(r, 0, r, 8);
+    for (let c = 0; c < 9; c++) { if (c === 0 || c === 8) gl(0, c, 9, c); else { gl(0, c, 4, c); gl(5, c, 9, c); } }
+    gl(0, 3, 2, 5); gl(0, 5, 2, 3); gl(7, 3, 9, 5); gl(7, 5, 9, 3);
+    ctx.lineWidth = Math.max(1, cell * 0.02);
+    for (const [r, c] of [[2, 1], [2, 7], [7, 1], [7, 7], [3, 0], [3, 2], [3, 4], [3, 6], [3, 8], [6, 0], [6, 2], [6, 4], [6, 6], [6, 8]]) mark(r, c);
+    // river
+    const [, ry0] = toScreen(4, 0), [, ry1] = toScreen(5, 0), ry = (ry0 + ry1) / 2;
+    ctx.fillStyle = 'rgba(74,42,18,.82)'; ctx.font = `bold ${cell * 0.52}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const [lx] = toScreen(0, 2), [rx] = toScreen(0, 6), left = Math.min(lx, rx), right = Math.max(lx, rx);
+    ctx.fillText('楚　河', left, ry); ctx.fillText('漢　界', right, ry);
+  }
+  function ring(x, y, rad, color, width, alpha = 1) { ctx.save(); ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+  function corners(sq, color) { // last-move bracket marker
+    const [x, y] = toScreen((sq / 9) | 0, sq % 9), d = cell * 0.47, l = cell * 0.16;
+    ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, cell * 0.055); ctx.lineCap = 'round';
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + sx * d, y + sy * (d - l)); ctx.lineTo(x + sx * d, y + sy * d); ctx.lineTo(x + sx * (d - l), y + sy * d); ctx.stroke(); }
+  }
+  function drawPiece(p) {
+    const side = p.code > 0 ? 1 : -1, type = Math.abs(p.code);
+    const [x0, y0] = toScreen(p.r, p.c), sel = game.selected === p.sq && !p.dying, lift = p.lift * cell * 0.18 + (sel ? cell * (0.07 + Math.sin(t * 5) * 0.02) : 0);
+    const R = cell * 0.44 * p.scale, x = x0, y = y0 - lift;
+    ctx.save(); ctx.globalAlpha = p.alpha;
+    // shadow
+    ctx.fillStyle = 'rgba(30,15,5,.38)'; ctx.beginPath(); ctx.ellipse(x0 + cell * 0.04 + lift * 0.3, y0 + cell * 0.06 + lift * 0.4, R * (1 + lift / cell * 0.3), R * 0.92, 0, 0, Math.PI * 2); ctx.fill();
+    // body: side edge then face
+    ctx.fillStyle = '#b0844c'; ctx.beginPath(); ctx.arc(x, y + cell * 0.05, R, 0, Math.PI * 2); ctx.fill();
+    const g = ctx.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.1, x, y, R); g.addColorStop(0, '#fff3d6'); g.addColorStop(0.75, '#f0d7a4'); g.addColorStop(1, '#d9b57a');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
+    const col = side > 0 ? '#b8281a' : '#1e1a17';
+    ctx.strokeStyle = 'rgba(90,55,20,.7)'; ctx.lineWidth = Math.max(1, R * 0.05); ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, R * 0.07); ctx.beginPath(); ctx.arc(x, y, R * 0.8, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = col; ctx.font = `bold ${R * 1.12}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(NAMES[side][type], x, y + R * 0.06);
+    ctx.restore();
+  }
+  function arrow(m, color) {
+    const [x0, y0] = toScreen((((m / 90) | 0) / 9) | 0, ((m / 90) | 0) % 9), [x1, y1] = toScreen(((m % 90) / 9) | 0, (m % 90) % 9);
+    const a = Math.atan2(y1 - y0, x1 - x0), L = Math.hypot(x1 - x0, y1 - y0), hw = cell * 0.22;
+    ctx.save(); ctx.translate(x0, y0); ctx.rotate(a); ctx.globalAlpha = 0.8; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(cell * 0.2, -cell * 0.06); ctx.lineTo(L - hw * 1.6, -cell * 0.06); ctx.lineTo(L - hw * 1.6, -hw); ctx.lineTo(L - cell * 0.12, 0); ctx.lineTo(L - hw * 1.6, hw); ctx.lineTo(L - hw * 1.6, cell * 0.06); ctx.lineTo(cell * 0.2, cell * 0.06); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  function draw(time) {
+    t = time || 0;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawBoard();
+    const pos = game.pos, h = pos.hist[pos.hist.length - 1];
+    if (h && h.m >= 0) { corners((h.m / 90) | 0, 'rgba(40,110,170,.85)'); corners(h.m % 90, 'rgba(40,110,170,.95)'); }
+    // check glow
+    if (!game.busy && pos.inCheck(pos.side)) { const k = pos.kingSq(pos.side); if (k >= 0) { const [x, y] = toScreen((k / 9) | 0, k % 9); const g = ctx.createRadialGradient(x, y, cell * 0.3, x, y, cell * 0.75); g.addColorStop(0, 'rgba(255,40,20,.0)'); g.addColorStop(0.5, `rgba(255,40,20,${0.45 + Math.sin(t * 6) * 0.2})`); g.addColorStop(1, 'rgba(255,40,20,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, cell * 0.75, 0, Math.PI * 2); ctx.fill(); } }
+    for (const p of sprites) drawPiece(p);
+    // selection + legal targets
+    if (game.selected >= 0) {
+      const [x, y] = toScreen((game.selected / 9) | 0, game.selected % 9);
+      ring(x, y - cell * 0.08, cell * 0.5, '#f2b632', Math.max(2, cell * 0.07), 0.75 + Math.sin(t * 5) * 0.25);
+      for (const m of game.targets) {
+        const s = m % 90, [tx, ty] = toScreen((s / 9) | 0, s % 9);
+        if (pos.board[s]) ring(tx, ty, cell * 0.49, '#e0301c', Math.max(2, cell * 0.08), 0.9);
+        else { ctx.fillStyle = 'rgba(30,140,70,.85)'; ctx.beginPath(); ctx.arc(tx, ty, cell * 0.12, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+      }
+    }
+    if (game.hintMove) arrow(game.hintMove, 'rgba(20,150,90,1)');
+  }
+
+  // ---------- input ----------
+  let down = null;
+  canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+  canvas.addEventListener('pointerup', (e) => {
+    if (!down) return; const dx = e.clientX - down.x, dy = e.clientY - down.y; down = null;
+    if (dx * dx + dy * dy > 100) return;
+    const r = canvas.getBoundingClientRect(); const sq = squareAt(e.clientX - r.left, e.clientY - r.top);
+    if (sq >= 0) onSquare(sq);
+  });
+
+  resize();
+  return { reset, sync, animate, draw, resize, squareAt, screenOf: (sq) => toScreen((sq / 9) | 0, sq % 9), get sprites() { return sprites; } };
 }
 
 </script>
