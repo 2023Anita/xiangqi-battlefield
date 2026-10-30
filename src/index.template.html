@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>象棋·战场 — 3D 中国象棋</title>
+<meta name="description" content="3D 中国象棋战场：兵种化棋子、投石机炮击、人机对战与在线联机。">
+<meta name="theme-color" content="#2a1a12">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f3e2bd' stroke='%23b8321e' stroke-width='5'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23b8321e' font-family='serif' font-weight='bold'%3E帅%3C/text%3E%3C/svg%3E">
+<style>
+:root{--paper:#f3ead6;--paper2:#e9dcc0;--ink:#2b1d14;--ink2:#5a4636;--red:#b8321e;--red2:#8f2414;--gold:#c9a24a;--teal:#1f5458;--font:"KaiTi","STKaiti","Kaiti SC","楷体","BiauKai","Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:#1a1410;font-family:var(--font);color:var(--ink);user-select:none;-webkit-user-select:none;touch-action:none}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;outline:none}
+button{font-family:var(--font);cursor:pointer}
+.panel{background:linear-gradient(180deg,rgba(247,239,221,.94),rgba(236,224,198,.94));border:1px solid #8a6a44;box-shadow:0 0 0 3px rgba(243,234,214,.55),0 0 0 4px #8a6a44,0 8px 24px rgba(0,0,0,.25);border-radius:4px}
+/* top bar */
+#top{position:fixed;top:max(10px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 12px);display:flex;align-items:center;gap:14px;padding:6px 16px;z-index:5;white-space:nowrap}
+#top .title{font-size:22px;font-weight:bold;letter-spacing:4px;color:var(--red2)}
+#top .title small{font-size:12px;letter-spacing:1px;color:var(--ink2);margin-left:6px}
+.turn{display:flex;align-items:center;gap:8px;font-size:17px}
+.turn .seal{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:bold;font-size:19px;color:#fff6df;border:2px solid var(--gold);box-shadow:inset 0 0 0 2px rgba(0,0,0,.15)}
+.turn.red .seal{background:var(--red)} .turn.black .seal{background:var(--teal)}
+.clock{font-family:ui-monospace,Menlo,monospace;font-size:13px;padding:2px 6px;border-radius:3px;background:rgba(43,29,20,.08)}
+.clock.r{color:var(--red2)} .clock.b{color:var(--teal)}
+.net{font-size:13px;padding:2px 8px;border-radius:10px;background:#eee}
+.net.ok{background:#dcefd6;color:#2d6a2a}.net.wait{background:#f6ead0;color:#8a5a12}.net.bad{background:#f6d6cf;color:#9a2a16}
+#thinking{display:none;font-size:13px;color:var(--ink2)}#thinking.show{display:inline-block;animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.35}}
+/* side panels */
+#left{position:fixed;left:12px;top:78px;width:200px;padding:10px 12px;z-index:4}
+#right{position:fixed;right:12px;top:78px;width:210px;max-height:calc(100vh - 170px);min-height:200px;padding:10px 12px;z-index:4;display:flex;flex-direction:column}
+.ph{font-size:16px;font-weight:bold;color:var(--red2);border-bottom:1px solid #b89c70;padding-bottom:4px;margin-bottom:6px;letter-spacing:3px;display:flex;justify-content:space-between;align-items:baseline}
+.ph small{font-size:12px;color:var(--ink2);letter-spacing:0;font-weight:normal}
+.tray{min-height:30px;display:flex;flex-wrap:wrap;gap:3px;margin-bottom:8px}
+.tray em{color:#a08a6a;font-style:normal}
+.chip{width:24px;height:24px;border-radius:50%;display:inline-grid;place-items:center;font-style:normal;font-size:14px;font-weight:bold;background:#f6e6c4;border:2px solid}
+.chip.r{color:var(--red);border-color:var(--red)} .chip.b{color:var(--teal);border-color:var(--teal)}
+.lbl{font-size:13px;color:var(--ink2);margin:2px 0}
+#modeTag{font-size:14px;margin-top:4px;color:var(--ink)}
+#moves{list-style:none;margin:0;padding:0;overflow:auto;flex:1;font-size:15px;line-height:1.75}
+#moves li{display:grid;grid-template-columns:30px 1fr 1fr;gap:4px;border-bottom:1px dotted #d2bf98}
+#moves li b{color:#9a8462;font-weight:normal;font-size:12px}
+#moves .rd{color:var(--red2)} #moves .bk{color:var(--teal)} #moves .empty{display:block;color:#a08a6a;text-align:center}
+/* toolbar */
+#bar{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom));transform:translateX(-50%);width:max-content;display:flex;gap:6px;padding:7px 8px;z-index:5;max-width:calc(100vw - 16px);overflow-x:auto;scrollbar-width:none}
+#bar::-webkit-scrollbar{display:none}
+.btn{flex:none;border:1px solid #8a6a44;background:linear-gradient(#fbf4e4,#eadbb9);color:var(--ink);padding:6px 11px;font-size:15px;border-radius:3px;box-shadow:inset 0 -2px 0 rgba(0,0,0,.08)}
+.btn:hover{background:linear-gradient(#fff9ec,#f0e2c2)} .btn:active{transform:translateY(1px)}
+.btn.on{background:linear-gradient(#c4402a,#9a2a18);color:#fff6df;border-color:#6d1a0e}
+.btn.primary{background:linear-gradient(#c4402a,#9a2a18);color:#fff6df;border-color:#6d1a0e}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.sep{margin-left:6px}
+#btnPanel{display:none}
+/* banner */
+.banner{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%) scale(.8);opacity:0;pointer-events:none;z-index:8;text-align:center;transition:all .35s cubic-bezier(.2,1.4,.4,1);padding:18px 46px 16px;min-width:300px}
+.banner.show{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
+.banner .t{font-size:56px;font-weight:bold;letter-spacing:10px;color:#fff6df;text-shadow:0 2px 0 rgba(0,0,0,.3)}
+.banner .s{font-size:18px;color:#fbe8c0;margin-top:2px;letter-spacing:2px}
+.banner{background:linear-gradient(180deg,#b8321e,#8a2010);border:3px solid var(--gold);box-shadow:0 0 0 4px rgba(0,0,0,.25),0 18px 50px rgba(0,0,0,.45);border-radius:4px}
+.banner.check{background:linear-gradient(180deg,#c8301c,#7a160a);pointer-events:none}
+.banner.win-red,.banner.win-black,.banner.draw{top:22%}
+.banner.win-black{background:linear-gradient(180deg,#245e62,#12373a)} .banner.draw{background:linear-gradient(180deg,#6b5a44,#3e3224)}
+.banner .acts{margin-top:12px;display:flex;gap:10px;justify-content:center}
+/* toast */
+#toast{position:fixed;left:50%;top:84px;transform:translateX(-50%) translateY(-8px);opacity:0;transition:all .25s;z-index:9;background:rgba(43,29,20,.88);color:#f8ecd2;padding:7px 16px;border-radius:16px;font-size:15px;pointer-events:none;max-width:90vw;text-align:center}
+#toast.show{opacity:1;transform:translateX(-50%)}
+/* modals */
+.modal{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;background:rgba(20,12,8,.45);backdrop-filter:blur(2px)}
+.modal.show{display:flex}
+.card{width:min(460px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:22px 24px}
+.card h1{margin:0 0 2px;text-align:center;font-size:40px;letter-spacing:10px;color:var(--red2)}
+.card .sub{text-align:center;color:var(--ink2);font-size:14px;margin-bottom:14px;letter-spacing:2px}
+.tabs{display:flex;border-bottom:2px solid #8a6a44;margin-bottom:14px}
+.tabs button{flex:1;border:0;background:none;font-size:17px;padding:8px 4px;color:var(--ink2);border-bottom:3px solid transparent;margin-bottom:-2px}
+.tabs button.on{color:var(--red2);border-bottom-color:var(--red);font-weight:bold}
+.tabpane{display:none}.tabpane.on{display:block}
+.row{display:flex;align-items:center;gap:10px;margin:10px 0;flex-wrap:wrap}
+.row>label{width:58px;color:var(--ink2);font-size:15px}
+.seg{display:flex;border:1px solid #8a6a44;border-radius:3px;overflow:hidden}
+.seg button{border:0;background:#f7efdc;padding:6px 14px;font-size:15px;border-right:1px solid #c9b088}.seg button:last-child{border-right:0}
+.seg button.on{background:var(--red);color:#fff6df}
+.desc{font-size:13px;color:var(--ink2);line-height:1.6;margin:6px 0 12px}
+.big{width:100%;padding:10px;font-size:18px;letter-spacing:4px;margin-top:6px}
+input[type=text],textarea{font-family:ui-monospace,Menlo,monospace;font-size:15px;border:1px solid #8a6a44;background:#fffaf0;padding:8px;border-radius:3px;width:100%;color:var(--ink);user-select:text;-webkit-user-select:text}
+#joinCode{text-transform:uppercase;letter-spacing:4px;font-size:20px;text-align:center}
+.err{color:#a3281a;font-size:14px;min-height:18px;margin-top:6px}
+.code{font-size:40px;letter-spacing:8px;text-align:center;font-family:ui-monospace,Menlo,monospace;color:var(--red2);font-weight:bold;margin:4px 0}
+.ostatus{text-align:center;font-size:15px;padding:6px;border-radius:3px;margin:8px 0}
+.ostatus.ok{background:#dcefd6;color:#2d6a2a}.ostatus.wait{background:#f6ead0;color:#8a5a12}.ostatus.bad{background:#f6d6cf;color:#9a2a16}
+#onlineDlg.guest .hostonly{display:none}
+.soon{opacity:.6}
+#loading{position:fixed;inset:0;background:#1a1410;color:#f3ead6;display:grid;place-items:center;z-index:30;font-size:22px;letter-spacing:6px;transition:opacity .6s}
+#loading.done{opacity:0;pointer-events:none}
+.foot{font-size:12px;color:#8a7458;text-align:center;margin-top:12px}
+body[data-light=night] .panel{background:linear-gradient(180deg,rgba(40,34,30,.92),rgba(28,24,22,.92));color:#eadfc8;border-color:#a0804e}
+body[data-light=night] .ph{color:#f0b08a} body[data-light=night] #moves .rd{color:#ff8a6a} body[data-light=night] #moves .bk{color:#7fc6c6} body[data-light=night] .lbl,body[data-light=night] #modeTag{color:#d8ccb4}
+body[data-light=night] #top .title{color:#f0b08a} body[data-light=night] .clock{background:rgba(255,255,255,.08)} body[data-light=night] .clock.r{color:#ff9a7a} body[data-light=night] .clock.b{color:#8fd0d0}
+body[data-light=sketch] .panel{background:rgba(252,251,247,.95);box-shadow:0 0 0 3px rgba(255,255,255,.6),0 0 0 4px #333,0 6px 16px rgba(0,0,0,.12);border-color:#333}
+/* responsive */
+@media (max-width: 900px){
+  #left{width:170px} #right{width:180px}
+}
+@media (max-width: 760px){
+  #top{top:max(6px,env(safe-area-inset-top));gap:8px;padding:5px 10px;max-width:calc(100vw - 12px)}
+  #top .title{display:none} .turn{font-size:15px} .turn .seal{width:28px;height:28px;font-size:16px}
+  #left{left:6px;right:6px;top:auto;bottom:66px;width:auto;display:none}
+  #right{left:6px;right:6px;top:auto;bottom:66px;width:auto;height:34vh;display:none}
+  body.panels-open #right{display:flex} body.panels-open #left{display:block;bottom:calc(66px + 34vh + 8px)}
+  #btnPanel{display:block}
+  .btn{padding:6px 9px;font-size:14px}
+  .banner .t{font-size:40px;letter-spacing:6px} .banner{min-width:240px;padding:14px 24px}
+}
+</style>
+</head>
+<body>
+<div id="loading">象棋 · 战场 载入中…</div>
+<canvas id="c"></canvas>
+
+<div id="top" class="panel">
+  <div class="title">象棋·战场<small>3D</small></div>
+  <span class="clock r" id="clockR" title="红方用时">00:00</span>
+  <div id="turn" class="turn red"><span class="seal">帅</span><span class="txt">红方走棋</span></div>
+  <span class="clock b" id="clockB" title="黑方用时">00:00</span>
+  <span id="thinking">AI 思考中…</span>
+  <span id="netStatus" class="net" style="display:none"></span>
+</div>
+
+<aside id="left" class="panel">
+  <div class="ph">战报<small id="modeTag"></small></div>
+  <div class="lbl">红方斩获</div><div class="tray" id="capByRed"></div>
+  <div class="lbl">黑方斩获</div><div class="tray" id="capByBlack"></div>
+</aside>
+
+<aside id="right" class="panel">
+  <div class="ph">棋谱<small>中文记谱</small></div>
+  <ul id="moves"></ul>
+</aside>
+
+<nav id="bar" class="panel">
+  <button class="btn primary" id="btnMenu">菜单</button>
+  <button class="btn" id="btnNew">新局</button>
+  <button class="btn" id="btnUndo">悔棋</button>
+  <button class="btn" id="btnHint">提示</button>
+  <button class="btn" id="btnDraw" style="display:none">求和</button>
+  <button class="btn" id="btnResign" style="display:none">认输</button>
+  <button class="btn sep" id="btn2d">2D 俯视</button>
+  <button class="btn" id="btnLight">光照·晨光</button>
+  <button class="btn" id="btnSketch">草图模式</button>
+  <button class="btn" id="btnLabels">字牌</button>
+  <button class="btn" id="btnMute">音效·开</button>
+  <button class="btn" id="btnSave">存档/读档</button>
+  <button class="btn" id="btnPanel">棋谱</button>
+</nav>
+
+<div id="banner" class="banner"><div class="t"></div><div class="s"></div><div class="acts"><button class="btn" id="bannerNew">再来一局</button><button class="btn" id="bannerClose">观看棋局</button></div></div>
+<div id="toast"></div>
+
+<div id="menu" class="modal">
+  <div class="card panel">
+    <h1>象棋·战场</h1>
+    <div class="sub">楚河汉界 · 两军对垒</div>
+    <div class="tabs"><button data-tab="local" class="on">本地双人</button><button data-tab="ai">人机对战</button><button data-tab="online">在线联机</button></div>
+    <div class="tabpane on" id="tab-local">
+      <div class="desc">同一台设备上两人轮流走棋。点击己方兵种选中，金色光点为可走位置，红圈为可吃子。</div>
+      <button class="btn primary big" id="startLocal">开 局</button>
+    </div>
+    <div class="tabpane" id="tab-ai">
+      <div class="row"><label>执子</label><div class="seg" id="aiSide"><button class="on" data-v="1">执红（先手）</button><button data-v="-1">执黑（后手）</button></div></div>
+      <div class="row"><label>难度</label><div class="seg" id="aiLevel"><button data-v="easy">易</button><button class="on" data-v="medium">中</button><button data-v="hard">难</button></div></div>
+      <div class="desc">AI 采用 α-β 剪枝 + 迭代加深 + 置换表，在后台线程推演，不会卡顿画面。</div>
+      <button class="btn primary big" id="startAI">出 征</button>
+    </div>
+    <div class="tabpane" id="tab-online">
+      <div class="row"><label>执子</label><div class="seg" id="hostSide"><button class="on" data-v="1">执红</button><button data-v="-1">执黑</button></div></div>
+      <button class="btn primary big" id="createRoom">创建房间</button>
+      <div class="desc" style="margin-top:14px">已有房间码？输入后加入（也可直接打开好友发来的邀请链接）：</div>
+      <div class="row"><input type="text" id="joinCode" maxlength="40" placeholder="房间码" autocomplete="off"></div>
+      <button class="btn big" id="joinBtn">加入房间</button>
+      <div class="err" id="joinErr"></div>
+      <div class="desc">点对点直连（WebRTC），棋局由房主校验同步；断线后会自动重连并恢复局面。</div>
+    </div>
+    <button class="btn big" id="btnContinue" style="display:none">继续当前对局</button>
+    <div class="foot">拖动旋转 · 滚轮/双指缩放 · 点击选子走棋</div>
+  </div>
+</div>
+
+<div id="onlineDlg" class="modal">
+  <div class="card panel">
+    <div class="ph">在线联机<small>房间码</small></div>
+    <div class="code" id="roomCode">------</div>
+    <div class="row hostonly" style="justify-content:center"><button class="btn" id="copyCode">复制房间码</button><button class="btn" id="copyLink">复制邀请链接</button></div>
+    <div class="row hostonly"><input type="text" id="roomLink" readonly></div>
+    <div id="onlineStatus" class="ostatus wait">连接中…</div>
+    <div class="err" id="onlineErr"></div>
+    <div class="desc hostonly">把房间码或链接发给好友，对方打开链接或在「加入房间」中输入房间码即可开战。</div>
+    <div class="row" style="justify-content:center"><button class="btn" id="onlineHide">先看棋盘</button><button class="btn" id="onlineCancel">取消联机</button></div>
+  </div>
+</div>
+
+<div id="dialog" class="modal"><div class="card panel" style="text-align:center"><div class="msg" style="font-size:19px;margin:8px 0 18px"></div><div class="row" style="justify-content:center"><button class="btn primary ok">同意</button><button class="btn no">拒绝</button></div></div></div>
+
+<div id="saveDlg" class="modal"><div class="card panel">
+  <div class="ph">存档 / 读档<small>FEN + 着法</small></div>
+  <div class="desc">复制下面的字符串保存棋局；粘贴 FEN（或「FEN moves h2e2 …」）后点「读取」恢复。</div>
+  <textarea id="saveText" rows="5"></textarea>
+  <div class="err" id="saveErr"></div>
+  <div class="row" style="justify-content:center"><button class="btn" id="saveCopy">复制</button><button class="btn primary" id="saveLoad">读取</button><button class="btn" id="saveClose">关闭</button></div>
+</div></div>
+
+<!--SCRIPTS-->
+</body>
+</html>
